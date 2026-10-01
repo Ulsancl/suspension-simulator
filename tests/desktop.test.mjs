@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { _electron as electron } from 'playwright';
 
 const require = createRequire(import.meta.url);
@@ -17,28 +19,157 @@ const env = { ...process.env, SUSPENSION_LAB_DATA_DIR: profile };
 delete env.ELECTRON_RUN_AS_NODE;
 let app, page;
 const checks = [], errors = [], remoteRequests = [];
-async function check(name, action) { await action(); checks.push(name); console.log(`PASS ${name}`); }
+const CHECK_TIMEOUT = 120000, OPERATION_TIMEOUT = 45000, CLOSE_TIMEOUT = 10000;
+const startedAt = new Date().toISOString(), runId = path.basename(profile);
+const reportPath = path.join(output, packaged ? 'installed-report.json' : 'report.json');
+const progressPath = path.join(output, 'progress.jsonl');
+const processLogPath = path.join(output, `desktop-${runId}.log`);
+const processRecords = [], checkResults = [], cleanupErrors = [], diagnosticErrors = [];
+const expectedProbeErrors = [], expectedProbeRequests = [];
+const runFile = promisify(execFile);
+let currentCheck = 'launch', lastOperation = 'initialization', primaryError = null;
+let suiteAborted = false, expectedProbeActive = false, processTail = '';
+function errorRecord(error) { return { name: error?.name || 'Error', message: error?.message || String(error), stack: error?.stack || String(error) }; }
+async function progress(event, details = {}) {
+  const entry = { runId, time: new Date().toISOString(), event, check: currentCheck, operation: lastOperation, ...details };
+  console.log(`${event} ${currentCheck}${details.message ? `: ${details.message}` : ''}`);
+  await fs.appendFile(progressPath, JSON.stringify(entry) + '\n');
+}
+async function bounded(label, action, timeout = OPERATION_TIMEOUT) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(action),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} exceeded ${timeout} ms`)), timeout); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+async function operation(label, action, timeout = OPERATION_TIMEOUT) {
+  lastOperation = label;
+  return bounded(label, action, timeout);
+}
+async function poll(label, read, accepted, timeout = OPERATION_TIMEOUT) {
+  lastOperation = label;
+  const deadline = Date.now() + timeout;
+  let value;
+  while (Date.now() < deadline) {
+    value = await bounded(label, read, Math.min(5000, Math.max(1, deadline - Date.now())));
+    if (accepted(value)) return value;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`${label} exceeded ${timeout} ms; last value: ${JSON.stringify(value)}`);
+}
+async function writeReport(status) {
+  const report = { status, runId, startedAt, updatedAt: new Date().toISOString(), executablePath, packaged, profile, checks, checkResults, errors, remoteRequests, expectedProbeErrors, expectedProbeRequests, version: expectedVersion, ciSha: process.env.GITHUB_SHA || null, failedCheck: primaryError?.check || null, lastOperation, primaryError, cleanupErrors, diagnosticErrors, processRecords, processTail, progressPath, processLogPath };
+  const text = JSON.stringify(report, null, 2) + '\n';
+  await fs.writeFile(reportPath, text);
+  await fs.writeFile(path.join(profile, 'run-report.json'), text);
+  if (status === 'FAILED') await fs.writeFile(path.join(output, 'failure.json'), text);
+}
+async function rememberFailure(error) {
+  if (!primaryError) primaryError = { ...errorRecord(error), check: currentCheck, operation: lastOperation, time: new Date().toISOString() };
+  // Write the original failure before attempting any potentially blocked diagnostics or close.
+  await writeReport('FAILED').catch(writeError => { diagnosticErrors.push(errorRecord(writeError)); console.error(`Failure report: ${writeError.stack}`); });
+}
+async function check(name, action) {
+  currentCheck = name;
+  lastOperation = 'check body';
+  const start = Date.now();
+  await progress('START');
+  try {
+    await bounded(name, action, CHECK_TIMEOUT);
+    if (suiteAborted) throw new Error('Desktop suite already exceeded its deadline');
+    checks.push(name); checkResults.push({ name, status: 'PASSED', elapsedMs: Date.now() - start });
+    await progress('PASS', { elapsedMs: Date.now() - start });
+  } catch (error) {
+    checkResults.push({ name, status: 'FAILED', elapsedMs: Date.now() - start, error: errorRecord(error), operation: lastOperation });
+    await rememberFailure(error);
+    await progress('FAIL', { elapsedMs: Date.now() - start, message: error.message });
+    throw error;
+  }
+}
 async function launch() {
-  app = await electron.launch({ executablePath, args: packaged ? [] : [root], env, timeout: 45000 });
-  page = await app.firstWindow();
+  await progress('LAUNCH');
+  app = await operation('Electron launch', () => electron.launch({ executablePath, args: packaged ? [] : [root], env, timeout: OPERATION_TIMEOUT }));
+  const child = app.process();
+  const processRecord = { pid: child.pid, startedAt: new Date().toISOString(), exited: false, exitCode: null, signal: null };
+  processRecords.push(processRecord);
+  child.once('exit', (exitCode, signal) => { Object.assign(processRecord, { exited: true, exitCode, signal, exitedAt: new Date().toISOString() }); });
+  for (const [streamName, stream] of [['stdout', child.stdout], ['stderr', child.stderr]]) stream?.on('data', bytes => {
+    const line = `[${child.pid} ${streamName}] ${bytes.toString()}`;
+    processTail = (processTail + line).slice(-65536);
+    void fs.appendFile(processLogPath, line).catch(error => diagnosticErrors.push(errorRecord(error)));
+  });
+  page = await operation('first window', () => app.firstWindow({ timeout: OPERATION_TIMEOUT }));
+  app.context().setDefaultTimeout(30000);
+  page.on('crash', () => { errors.push('Renderer crashed'); });
   page.on('pageerror', error => errors.push(error.message));
-  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
-  page.on('request', request => { if (/^https?:/.test(request.url())) remoteRequests.push(request.url()); });
-  await page.waitForFunction(() => window.suspensionLab?.getProductState, {}, { timeout: 45000 });
-  await page.evaluate(() => window.suspensionLab.productReady);
-  await page.evaluate(() => window.suspensionLab.setRunning(false));
+  page.on('console', msg => {
+    if (msg.type() !== 'error') return;
+    if (expectedProbeActive && (msg.text().includes('https://example.com/') || msg.location().url === 'https://example.com/')) expectedProbeErrors.push(msg.text());
+    else errors.push(msg.text());
+  });
+  page.on('request', request => {
+    if (!/^https?:/.test(request.url())) return;
+    if (expectedProbeActive && request.url() === 'https://example.com/' && !expectedProbeRequests.length) expectedProbeRequests.push(request.url());
+    else remoteRequests.push(request.url());
+  });
+  await operation('renderer API ready', () => page.waitForFunction(() => window.suspensionLab?.getProductState, {}, { timeout: OPERATION_TIMEOUT }));
+  await operation('persistent product ready', () => page.evaluate(() => window.suspensionLab.productReady));
+  await operation('initial pause', () => page.evaluate(() => window.suspensionLab.setRunning(false)));
 }
 const config = () => page.evaluate(() => window.suspensionLab.getConfig());
 const records = () => page.evaluate(() => window.suspensionLab.getExperiments());
 async function view(value) { await page.evaluate(v => window.suspensionLab.setWorkspaceView(v), value); }
 async function idle() { await page.waitForFunction(() => !window.suspensionLab.getProductState().busy); }
 async function saveDialog(filePath, canceled = false) {
-  await app.evaluate(({ dialog }, payload) => { dialog.showSaveDialog = async (_window, options) => { globalThis.saveDialogCalls = (globalThis.saveDialogCalls || 0) + 1; globalThis.saveDialogOptions = options; return { canceled: payload.canceled, filePath: payload.filePath }; }; }, { filePath, canceled });
+  return app.evaluate(({ dialog }, payload) => { dialog.showSaveDialog = async (_window, options) => { globalThis.saveDialogCalls = (globalThis.saveDialogCalls || 0) + 1; globalThis.saveDialogOptions = options; return { canceled: payload.canceled, filePath: payload.filePath }; }; return globalThis.saveDialogCalls || 0; }, { filePath, canceled });
 }
 async function openDialog(filePath, canceled = false) {
-  await app.evaluate(({ dialog }, payload) => { dialog.showOpenDialog = async (_window, options) => { globalThis.openDialogCalls = (globalThis.openDialogCalls || 0) + 1; globalThis.openDialogOptions = options; return { canceled: payload.canceled, filePaths: payload.canceled ? [] : [payload.filePath] }; }; }, { filePath, canceled });
+  return app.evaluate(({ dialog }, payload) => { dialog.showOpenDialog = async (_window, options) => { globalThis.openDialogCalls = (globalThis.openDialogCalls || 0) + 1; globalThis.openDialogOptions = options; return { canceled: payload.canceled, filePaths: payload.canceled ? [] : [payload.filePath] }; }; return globalThis.openDialogCalls || 0; }, { filePath, canceled });
 }
-async function toast(source) { await page.waitForFunction(pattern => new RegExp(pattern).test(document.querySelector('#toast')?.textContent || ''), source); }
+async function dialogCalled(kind, before) {
+  const count = await poll(`${kind} native dialog call`, () => app.evaluate((_electron, key) => globalThis[key] || 0, `${kind}DialogCalls`), value => value >= before + 1);
+  assert.equal(count, before + 1, `${kind} should invoke exactly one native dialog`);
+}
+async function freshToast(action, source) {
+  await operation('clear previous toast', () => page.evaluate(() => { const toast = document.querySelector('#toast'); if (toast) { toast.textContent = ''; toast.hidden = true; } }));
+  await action();
+  await operation(`new toast: ${source}`, () => page.waitForFunction(pattern => { const toast = document.querySelector('#toast'); return toast && !toast.hidden && new RegExp(pattern).test(toast.textContent || ''); }, source));
+  await idle();
+}
+async function projectWritten(filePath, expectedConfig, expectedRuns) {
+  return poll(`project bytes written: ${path.basename(filePath)}`, async () => {
+    try { return JSON.parse(await fs.readFile(filePath, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
+  }, value => value && isDeepStrictEqual(value.config, expectedConfig) && isDeepStrictEqual(value.runs, expectedRuns));
+}
+async function normalClose(label = 'normal application close') {
+  const closing = app, record = processRecords.at(-1);
+  if (!closing) return;
+  await operation(label, async () => {
+    await closing.close();
+    await poll('owned application process exited', () => record?.exited, Boolean, 3000);
+  }, CLOSE_TIMEOUT);
+  app = null; page = null;
+}
+async function forceOwnedProcesses() {
+  for (const record of processRecords.filter(value => !value.exited)) {
+    assert.ok(Number.isSafeInteger(record.pid) && record.pid > 0 && record.pid !== process.pid, 'Only a captured child PID may be terminated');
+    if (process.platform === 'win32') await bounded(`terminate owned PID tree ${record.pid}`, () => runFile('taskkill.exe', ['/PID', String(record.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }), 6000);
+    else process.kill(record.pid, 'SIGKILL');
+    record.forcedTermination = true;
+  }
+}
+async function failureDiagnostics() {
+  if (page && !page.isClosed()) {
+    for (const [label, action] of [
+      ['failure screenshot', () => page.screenshot({ path: path.join(output, 'failure.png'), timeout: 2000 })],
+      ['failure renderer state', async () => { const state = await page.evaluate(() => ({ url: location.href, toast: document.querySelector('#toast')?.textContent, product: window.suspensionLab?.getProductState?.() })); const text = JSON.stringify({ runId, ...state }, null, 2); await fs.writeFile(path.join(profile, 'failure-state.json'), text); await fs.writeFile(path.join(output, 'failure-state.json'), text); }],
+    ]) await bounded(label, action, 3000).catch(error => diagnosticErrors.push(errorRecord(error)));
+  }
+  await fs.copyFile(path.join(profile, 'desktop.log'), path.join(output, `desktop-${runId}-native.log`)).catch(error => { if (error.code !== 'ENOENT') diagnosticErrors.push(errorRecord(error)); });
+}
 async function exportedFile(selector, name) {
   const target = path.join(output, name);
   await fs.unlink(target).catch(() => {});
@@ -50,16 +181,13 @@ async function exportedFile(selector, name) {
     });
   }, target);
   await page.locator(selector).click();
-  const result = await app.evaluate(() => new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { clearInterval(timer); reject(new Error('Download did not finish')); }, 45000);
-    const timer = setInterval(() => { if (globalThis.lastNativeDownload) { clearInterval(timer); clearTimeout(timeout); resolve(globalThis.lastNativeDownload); } }, 50);
-  }));
+  const result = await poll(`native download completed: ${name}`, () => app.evaluate(() => globalThis.lastNativeDownload), Boolean);
   assert.equal(result.state, 'completed');
   return fs.readFile(target);
 }
 let savedConfig, savedRuns;
 const projectPath = path.join(output, '시험 프로젝트.suspension.json');
-try {
+async function runChecks() {
   await launch();
   await check('bundled first launch renders 3D offline with isolated native API and persistent storage', async () => {
     assert.equal(page.url().split('#')[0], 'app://suspension/');
@@ -67,10 +195,9 @@ try {
     assert.equal(values.desktop, true); assert.equal(values.node, 'undefined'); assert.equal(values.storage.ready, true); assert.equal(values.canvas, true); assert.equal(values.workers, 0);
     assert.match(await page.locator('#project-save-status').textContent(), /이 앱에 자동 저장됨/);
     assert.equal(await page.locator('#install-app-btn').isVisible(), false);
-    const denied = await page.evaluate(() => fetch('https://example.com/').then(() => false).catch(() => true));
-    assert.equal(denied, true);
-    // The deliberate rejected request above is omitted from application error checks.
-    errors.length = 0; remoteRequests.length = 0;
+    expectedProbeActive = true;
+    try { assert.equal(await operation('intentional denied network probe', () => page.evaluate(() => fetch('https://example.com/').then(() => false).catch(() => true))), true); }
+    finally { expectedProbeActive = false; }
   });
   await check('physics and live play/pause work inside the packaged window', async () => {
     await page.evaluate(() => { window.suspensionLab.setConfig({ road: 'flat', holderMode: 'sprung' }); window.suspensionLab.reset(); window.suspensionLab.advance(2); });
@@ -122,46 +249,53 @@ try {
     for (const row of savedRuns[0].history) for (const value of Object.values(row)) if (typeof value === 'number') assert.ok(Number.isFinite(value));
   });
   await check('native save writes valid project and safely replaces an existing file', async () => {
-    await saveDialog(projectPath);
-    await page.locator('#save-project-btn').click(); await toast('설정과 모든 보관 기록');
-    const file = JSON.parse(await fs.readFile(projectPath, 'utf8'));
+    const before = await saveDialog(projectPath);
+    await freshToast(() => page.locator('#save-project-btn').click(), '설정과 모든 보관 기록');
+    await dialogCalled('save', before);
+    const file = await projectWritten(projectPath, savedConfig, savedRuns);
     assert.deepEqual(file.config, savedConfig); assert.equal(file.runs[0].id, savedRuns[0].id);
     await fs.writeFile(projectPath, 'old file');
-    await page.locator('#save-project-btn').click();
-    await page.waitForFunction(() => document.querySelector('#project-save-status')?.textContent === '프로젝트 파일 저장됨');
-    // A marker from native completion ensures the second asynchronous write finished.
-    await app.evaluate(async () => new Promise(resolve => setTimeout(resolve, 150)));
-    assert.equal(JSON.parse(await fs.readFile(projectPath, 'utf8')).runs.length, 1);
+    await freshToast(() => page.locator('#save-project-btn').click(), '설정과 모든 보관 기록');
+    await dialogCalled('save', before + 1);
+    assert.equal((await projectWritten(projectPath, savedConfig, savedRuns)).runs.length, 1);
   });
   await check('save and open cancellation preserve the project', async () => {
-    await saveDialog(path.join(output, 'canceled.json'), true);
+    const canceledPath = path.join(profile, 'canceled.json');
+    const saveBefore = await saveDialog(canceledPath, true);
     await page.locator('#save-project-btn').click();
-    await app.evaluate(async () => new Promise(resolve => setTimeout(resolve, 150)));
-    await assert.rejects(fs.access(path.join(output, 'canceled.json')));
-    await openDialog(projectPath, true);
+    await dialogCalled('save', saveBefore); await idle();
+    await assert.rejects(fs.access(canceledPath), { code: 'ENOENT' });
+    const openBefore = await openDialog(projectPath, true);
     await page.locator('#open-project-btn').click();
-    await app.evaluate(async () => new Promise(resolve => setTimeout(resolve, 100)));
+    await dialogCalled('open', openBefore); await idle();
     assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
   });
   await check('Ctrl+S and Ctrl+O trigger exactly one native dialog each', async () => {
     await saveDialog(projectPath);
     await app.evaluate(() => { globalThis.saveDialogCalls = 0; globalThis.openDialogCalls = 0; });
-    await page.keyboard.press('Control+s');
-    await app.evaluate(async () => new Promise(resolve => setTimeout(resolve, 200)));
+    await fs.writeFile(projectPath, 'previous file before Ctrl+S');
+    await freshToast(() => page.keyboard.press('Control+s'), '설정과 모든 보관 기록');
+    await dialogCalled('save', 0);
     assert.equal(await app.evaluate(() => globalThis.saveDialogCalls), 1);
-    assert.equal(JSON.parse(await fs.readFile(projectPath, 'utf8')).runs.length, 1);
+    assert.equal((await projectWritten(projectPath, savedConfig, savedRuns)).runs.length, 1);
     await openDialog(projectPath);
-    await page.keyboard.press('Control+o'); await toast('프로젝트의 설정과 기록을 복원'); await idle();
+    await freshToast(() => page.keyboard.press('Control+o'), '프로젝트의 설정과 기록을 복원');
+    await dialogCalled('open', 0);
     assert.equal(await app.evaluate(() => globalThis.openDialogCalls), 1);
+    assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
   });
   await check('native open restores config and records and rejects corrupt projects atomically', async () => {
-    await openDialog(projectPath);
+    const before = await openDialog(projectPath);
     await page.evaluate(() => window.suspensionLab.setConfig({ speed: 80 }));
-    await page.locator('#open-project-btn').click(); await toast('프로젝트의 설정과 기록을 복원');
+    assert.equal((await config()).speed, 80);
+    await freshToast(() => page.locator('#open-project-btn').click(), '프로젝트의 설정과 기록을 복원');
+    await dialogCalled('open', before);
     assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
     const bad = JSON.parse(await fs.readFile(projectPath, 'utf8')); bad.runs[0].history.at(-1).contactForce = -1;
     const badPath = path.join(output, 'corrupt.json'); await fs.writeFile(badPath, JSON.stringify(bad));
-    await openDialog(badPath); await page.locator('#open-project-btn').click(); await toast('프로젝트 열기 실패');
+    const badBefore = await openDialog(badPath);
+    await freshToast(() => page.locator('#open-project-btn').click(), '프로젝트 열기 실패');
+    await dialogCalled('open', badBefore);
     assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
   });
   await check('native export creates CSV, report, PNG and GLB files', async () => {
@@ -175,24 +309,45 @@ try {
   });
   await check('canceled PNG export reports cancellation without a false success', async () => {
     await app.evaluate(({ session }) => { session.defaultSession.once('will-download', (_event, item) => item.cancel()); });
-    await page.locator('#capture-view-btn').click(); await toast('파일 저장을 취소');
+    await freshToast(() => page.locator('#capture-view-btn').click(), '파일 저장을 취소');
   });
   await check('window close is canceled during an actual project restore', async () => {
-    await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => { globalThis.closePromptCalls = (globalThis.closePromptCalls || 0) + 1; return { response: 0 }; }; });
+    await app.evaluate(({ dialog }) => { globalThis.originalMessageBox = dialog.showMessageBox; globalThis.closePromptCalls = 0; dialog.showMessageBox = async () => { globalThis.closePromptCalls++; return { response: 0 }; }; });
     await openDialog(projectPath);
-    await page.evaluate(() => { window.originalBlobText = Blob.prototype.text; Blob.prototype.text = async function () { await new Promise(resolve => setTimeout(resolve, 750)); return window.originalBlobText.call(this); }; });
-    await page.locator('#open-project-btn').click();
-    await page.waitForFunction(() => window.suspensionLab.getProductState().busy);
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
-    assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1);
-    assert.equal(await app.evaluate(() => globalThis.closePromptCalls), 1);
-    await idle();
-    await page.evaluate(() => { Blob.prototype.text = window.originalBlobText; delete window.originalBlobText; });
-    assert.deepEqual(await records(), savedRuns);
+    await page.evaluate(() => {
+      const original = Blob.prototype.text;
+      let release;
+      const held = new Promise(resolve => { release = resolve; });
+      const gate = window.restoreReadGate = { entered: false, release, original };
+      Blob.prototype.text = async function () { gate.entered = true; await held; return original.call(this); };
+      const toast = document.querySelector('#toast'); if (toast) { toast.textContent = ''; toast.hidden = true; }
+    });
+    let fixtureError;
+    try {
+      await page.locator('#open-project-btn').click();
+      await page.waitForFunction(() => window.restoreReadGate.entered && window.suspensionLab.getProductState().busy);
+      assert.deepEqual(await records(), savedRuns, 'The pending read must leave the original records intact');
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+      await poll('busy-close prompt invoked', () => app.evaluate(() => globalThis.closePromptCalls), count => count > 0);
+      assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1);
+      assert.equal(await app.evaluate(() => globalThis.closePromptCalls), 1);
+      assert.equal(await page.evaluate(() => window.suspensionLab.getProductState().busy), true, 'Read remains held until the test explicitly releases it');
+      await page.evaluate(() => window.restoreReadGate.release());
+      await operation('released restore completion', () => page.waitForFunction(() => { const toast = document.querySelector('#toast'); return toast && !toast.hidden && /프로젝트의 설정과 기록을 복원/.test(toast.textContent || ''); }));
+      await idle();
+      assert.deepEqual(await records(), savedRuns);
+    } catch (error) { fixtureError = error; await rememberFailure(error); }
+    finally {
+      for (const [label, action] of [
+        ['restore Blob.text fixture', () => page.evaluate(() => { const gate = window.restoreReadGate; if (gate) { gate.release(); Blob.prototype.text = gate.original; delete window.restoreReadGate; } })],
+        ['restore native message-box fixture', () => app.evaluate(({ dialog }) => { if (globalThis.originalMessageBox) { dialog.showMessageBox = globalThis.originalMessageBox; delete globalThis.originalMessageBox; } })],
+      ]) try { await bounded(label, action, 2000); } catch (error) { if (!fixtureError) fixtureError = error; else diagnosticErrors.push(errorRecord(error)); }
+    }
+    if (fixtureError) throw fixtureError;
   });
   await check('complete quit and relaunch preserve settings, names and full experiment history', async () => {
     await view('bench'); await page.screenshot({ path: path.join(output, packaged ? 'installed-app.png' : 'desktop-app.png') });
-    await app.close();
+    await normalClose('normal close before persistence relaunch');
     await launch();
     assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
     assert.equal((await page.evaluate(() => window.suspensionLab.getProductState())).projectName, 'Windows 설치본 검증');
@@ -208,14 +363,36 @@ try {
     const pair=selected.map(id=>complete.find(record=>record.id===id));
     assert.deepEqual(pair.map(record=>record.config.reboundDamping),[900,4200]);
     assert.equal(await page.locator('#consumer-guide-results').isVisible(),true);
-    const guidePath=path.join(output,'첫 비교 실험.suspension.json');await saveDialog(guidePath);
-    await page.locator('[data-guide-action="save"]').click();await toast('설정과 모든 보관 기록');
-    const exported=JSON.parse(await fs.readFile(guidePath,'utf8'));assert.deepEqual(exported.config,beforeConfig);assert.deepEqual(exported.runs,complete);
-    await app.close();await launch();
+    const guidePath=path.join(output,'첫 비교 실험.suspension.json'),before=await saveDialog(guidePath);
+    await freshToast(() => page.locator('[data-guide-action="save"]').click(), '설정과 모든 보관 기록');
+    await dialogCalled('save', before);
+    const exported=await projectWritten(guidePath,beforeConfig,complete);assert.deepEqual(exported.config,beforeConfig);assert.deepEqual(exported.runs,complete);
+    await normalClose('normal close before guided experiment relaunch');await launch();
     assert.deepEqual(await config(),beforeConfig);assert.deepEqual(await records(),complete);
     await view('experiments');assert.equal(await page.locator('#consumer-guide-results').isVisible(),true);
   });
   await check('final application runs with no JavaScript errors or remote content', async () => { assert.deepEqual(errors, []); assert.deepEqual(remoteRequests, []); });
-  await fs.writeFile(path.join(output, packaged ? 'installed-report.json' : 'report.json'), JSON.stringify({ executablePath, packaged, profile, checks, errors, remoteRequests, version: expectedVersion }, null, 2));
-  console.log(`Verified ${checks.length} desktop checks.`);
-} finally { if (app) await app.close().catch(() => {}); }
+}
+try {
+  await writeReport('RUNNING');
+  await bounded('complete desktop suite', runChecks, 8 * 60 * 1000);
+} catch (error) {
+  suiteAborted = true;
+  await rememberFailure(error);
+  console.error(`FAIL ${primaryError.check}: ${primaryError.stack}`);
+  await failureDiagnostics();
+} finally {
+  if (app) {
+    try { await normalClose('final graceful cleanup'); }
+    catch (error) {
+      cleanupErrors.push(errorRecord(error));
+      await rememberFailure(error);
+      await progress('CLEANUP_FAIL', { message: error.message });
+      try { await forceOwnedProcesses(); } catch (killError) { cleanupErrors.push(errorRecord(killError)); console.error(`Owned process cleanup: ${killError.stack}`); }
+    }
+  }
+  const failed = !!primaryError || cleanupErrors.length > 0;
+  await writeReport(failed ? 'FAILED' : 'PASSED');
+  if (failed) process.exitCode = 1;
+  else console.log(`Verified ${checks.length} desktop checks.`);
+}
