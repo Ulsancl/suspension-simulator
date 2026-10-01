@@ -23,7 +23,7 @@ await run(process.execPath, [path.join(root, 'scripts', 'clean-dist.mjs')]);
 await run(process.execPath, [path.join(path.dirname(require.resolve('vite/package.json')), 'bin', 'vite.js'), 'build']);
 if (mode === 'start') await run(require('electron'), [root]);
 else {
-  await run(process.execPath, [path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js'), '--win', 'nsis', '--x64', '--config', 'electron-builder.json']);
+  await run(process.execPath, [path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js'), '--win', 'nsis', '--x64', '--publish', 'never', '--config', 'electron-builder.json']);
   const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const file = path.join(root, 'release', 'windows', `Suspension-Lab-Setup-${version}.exe`);
   fs.writeFileSync(file + '.sha256', `${createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${path.basename(file)}\n`);
