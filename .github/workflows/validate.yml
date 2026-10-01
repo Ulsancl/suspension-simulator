@@ -48,44 +48,10 @@ jobs:
         run: npm test
       - name: Build web bundle
         run: npm run build
-      - name: Start local test servers
-        run: |
-          $taskDev = Start-Process -FilePath (Get-Command node).Source -ArgumentList @('node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'suspension-dev.log') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'suspension-dev-error.log')
-          $taskRelease = Start-Process -FilePath (Get-Command node).Source -ArgumentList @('scripts/serve-release.mjs') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'suspension-release.log') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'suspension-release-error.log')
-          "SUSPENSION_DEV_PID=$($taskDev.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "SUSPENSION_RELEASE_PID=$($taskRelease.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          foreach ($taskUrl in @('http://127.0.0.1:5173', 'http://127.0.0.1:5175')) {
-            $taskReady = $false
-            for ($taskAttempt = 0; $taskAttempt -lt 45; $taskAttempt++) {
-              try { $taskResponse = Invoke-WebRequest -Uri $taskUrl -TimeoutSec 2; if ($taskResponse.StatusCode -eq 200) { $taskReady = $true; break } } catch { }
-              Start-Sleep -Seconds 1
-            }
-            if (-not $taskReady) { throw "Test server unavailable: $taskUrl" }
-          }
-      - name: Verify browser interaction
-        run: npm run test:browser
-      - name: Verify previous experiment preservation and recovery
-        run: node tests/experiment-migration-browser.test.mjs
-      - name: Verify first guided A/B experiment
-        run: npm run test:guide
-      - name: Verify product workflows
-        run: npm run test:product
-      - name: Verify dashboard and layout
-        run: |
-          npm run test:dashboard
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run test:design
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify offline web release
-        run: npm run test:offline
+      - name: Verify web workflows
+        run: node scripts/verify-web.mjs
       - name: Verify source desktop app
         run: npm run test:desktop
-      - name: Stop local test servers
-        if: always()
-        run: |
-          foreach ($taskProcessId in @($env:SUSPENSION_DEV_PID, $env:SUSPENSION_RELEASE_PID)) {
-            if ($taskProcessId) { Stop-Process -Id ([int]$taskProcessId) -ErrorAction SilentlyContinue }
-          }
       - name: Package Windows installer
         run: npm run package:desktop
       - name: Verify independent desktop executable
