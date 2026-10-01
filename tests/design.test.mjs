@@ -95,6 +95,7 @@ async function cleanCaptureLayout() {
 }
 
 try {
+  await page.clock.install();
   await page.goto(baseURL, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.suspensionLab?.getChartState && window.suspensionLab?.getSceneDiagnostics);
   entryScripts = await page.locator('script[type="module"][src]').evaluateAll(elements => elements.map(element => element.src));
@@ -192,26 +193,40 @@ try {
     const chart = page.locator('#motion-chart');
     await chart.scrollIntoViewIfNeeded();
     const box = await chart.boundingBox();
-    await setRunning(true);
-    const before = await state();
-    const y = box.y + box.height * 0.55;
-    await page.mouse.move(box.x + box.width * 0.45, y);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * 0.73, y, { steps: 8 });
-    await page.mouse.up();
-    const panned = await state();
-    assert.equal(panned.follow, false);
-    assert.equal(await page.locator('#chart-follow').isChecked(), false);
-    assert.ok(panned.end < before.end - 0.1, 'Drag reveals older samples');
-    assert.equal(JSON.parse(await page.evaluate(() => window.render_game_to_text())).mode, 'running', 'Chart pan preserves simulation playback');
     await setRunning(false);
-    await advance(1.5);
-    assert.ok(Math.abs((await state()).end - panned.end) < 0.02, 'New samples preserve the panned view');
-    await page.locator('#chart-reset-view').click();
-    const restored = await state();
-    assert.equal(restored.follow, true);
-    assert.equal(await page.locator('#chart-follow').isChecked(), true);
-    assert.ok(Math.abs(restored.end - (await snapshot()).time) < 0.025, 'Reset view catches up to current samples');
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 60_000));
+    try {
+      await setRunning(true);
+      const before = await state(), beforeTime = (await snapshot()).time;
+      const y = box.y + box.height * 0.55;
+      await page.mouse.move(box.x + box.width * 0.45, y);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.73, y, { steps: 8 });
+      await page.mouse.up();
+      const panned = await state();
+      assert.equal(panned.follow, false);
+      assert.equal(await page.locator('#chart-follow').isChecked(), false);
+      assert.ok(panned.end < before.end - 0.1, 'Drag reveals older samples');
+      assert.equal(JSON.parse(await page.evaluate(() => window.render_game_to_text())).mode, 'running', 'Real pointer drag preserves simulation playback');
+      await page.clock.runFor(300);
+      const playing = JSON.parse(await page.evaluate(() => window.render_game_to_text()));
+      assert.equal(playing.mode, 'running');
+      assert.ok(playing.state.time > beforeTime + .25, 'RAF playback still advances after the drag');
+      assert.ok(Math.abs((await state()).end - panned.end) < 0.02, 'RAF samples preserve the panned view');
+      await setRunning(false);
+      await advance(1.5);
+      assert.ok(Math.abs((await state()).end - panned.end) < 0.02, 'New samples preserve the panned view');
+      // Force skips locator RAF stability checks while the test clock is paused.
+      await page.locator('#chart-reset-view').click({ force: true });
+      const restored = await state();
+      assert.equal(restored.follow, true);
+      assert.equal(await page.locator('#chart-follow').isChecked(), true);
+      assert.ok(Math.abs(restored.end - (await snapshot()).time) < 0.025, 'Reset view catches up to current samples');
+      sceneEvidence.chartPanClock = { virtualMilliseconds: 300, beforeTime, afterTime: playing.state.time, before, panned, restored };
+    } finally {
+      await setRunning(false);
+      await page.clock.resume();
+    }
   });
 
   await check('all analysis summaries compute correct RMS, extrema and contact loss for the visible interval', async () => {

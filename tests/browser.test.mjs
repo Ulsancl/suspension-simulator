@@ -307,15 +307,39 @@ try {
   });
 
   await check('single obstacle trial starts and stops automatically', async () => {
-    await page.evaluate(() => window.suspensionLab.setWorkspaceView?.('bench'));
-    await patch({ [roadKey]: 'bump', [speedKey]: 100, timeScale: 1 });
-    await page.locator('#single-event-btn').click();
-    await page.waitForFunction(() => {
-      const value = JSON.parse(window.render_game_to_text());
-      return value.mode === 'paused' && value.state.time > 0.1;
-    }, null, { timeout: 15000 });
-    assert.equal((await config()).singleEvent, true);
-    assertFinite(await snapshot());
+    // Run real RAF callbacks with controlled timestamps. A slow renderer must
+    // not turn the frame-delay safety pause into a false obstacle completion.
+    const trialContext = await browser.newContext({ viewport: { width: 1440, height: 980 } });
+    const trial = await trialContext.newPage();
+    trial.on('pageerror', error => errors.push(error.message));
+    trial.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+    try {
+      await trial.clock.install();
+      await trial.goto(baseURL, { waitUntil: 'networkidle' });
+      await trial.waitForFunction(() => window.suspensionLab?.productReady && window.render_game_to_text);
+      await trial.evaluate(async settings => {
+        const app = window.suspensionLab;
+        await app.productReady;
+        app.setRunning(false);
+        app.setConfig(settings);
+        app.setWorkspaceView('bench');
+      }, { ...(await config()), [roadKey]: 'bump', [speedKey]: 100, timeScale: 1 });
+      await trial.clock.pauseAt(await trial.evaluate(() => Date.now() + 60_000));
+      await trial.locator('#single-event-btn').click({ force: true });
+      assert.equal(await trial.locator('#run-btn').getAttribute('aria-pressed'), 'true');
+      await trial.clock.runFor(1000);
+      const completed = await trial.evaluate(() => ({
+        ...JSON.parse(window.render_game_to_text()),
+        toast: document.querySelector('#toast').textContent,
+      }));
+      assert.equal(completed.config.singleEvent, true);
+      assert.ok(completed.state.distance >= completed.config.roadSpacing + completed.config.roadWidth,
+        'Automatic stop happens after the whole obstacle has passed');
+      assert.equal(completed.mode, 'paused');
+      assert.match(completed.toast, /장애물 1회 통과 시험을 완료/);
+      assertFinite(completed.state);
+      await fs.writeFile(path.join(outputDir, 'single-event-clock.json'), JSON.stringify({ virtualMilliseconds: 1000, completed }, null, 2));
+    } finally { await trialContext.close(); }
   });
 
   await check('stress settings stay finite across all roads and spring types', async () => {
