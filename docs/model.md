@@ -114,3 +114,84 @@ K φ = ω² M φ,   frequencyHz = ω/(2π)
 실측 비교는 `simulationTime = measuredTime + timeOffset` 규칙으로 시간축을 옮기고, 겹치는 구간에서 시뮬레이션 신호를 선형 보간합니다. 잔차는 `시뮬레이션 − 실측`입니다. RMSE, MAE, 최대 절대 오차와 `R² = 1 − Σ잔차²/Σ(실측−평균)²`를 계산합니다. 상수 신호의 R²는 null이며 R²가 음수가 될 수 있습니다. 자동 오프셋 탐색·단위 추정·중력 제거·필터링·겹침 밖 외삽은 하지 않습니다.
 
 평탄 정적 평형과 선형 감쇠 응답의 폐형식 비교는 수치 구현을 확인하는 기준 시험입니다. 센서 교정, 독립 솔버 비교와 실차의 적용 영역 검증은 별도입니다. 필요한 근거는 [엔지니어링 출시 조건](engineering-release.md)을 확인합니다.
+
+## 현재 상태의 상세 관찰
+
+`src/detail-model.js`의 `suspensionDetail(config, snapshot)`은 적용된 `sim.config`와 현재 `sim.snapshot()`에서 도출하는 읽기 전용 관찰 API입니다. 이미 정리된 설정과 유한한 스냅샷을 요구하며 잘못된 값을 자동 보정하지 않습니다. 적분, 모형 버전 `quarter-car-1.3`, 기록 표본, 전체 시험 통계와 저장 형식을 바꾸지 않습니다. 반환값은 독립 객체이고 모든 물리량은 SI 단위입니다. 표시 배율 `timeScale`은 물리 속도·가속도·동력에 곱하지 않습니다.
+
+### 힘의 작용 대상과 고정 지지대
+
+상세값의 힘 부호는 Y 위쪽을 양수로 둡니다. `forces.suspensionN`은 원래 스냅샷의 `springForce + damperForce + bumpStopForce`이며, 차체에는 이 힘이 위쪽으로, 휠에는 반대 방향으로 작용합니다.
+
+```text
+차체: Fsusp − ms g + Rfixed = ms · bodyAcceleration
+휠:   Ft − Fsusp − mu g     = mu · wheelAcceleration
+고정 차체: Rfixed = ms g − Fsusp
+탄성 차체: Rfixed = 0
+```
+
+`forces.body`는 `{suspensionN,gravityN,constraintN,netN,inertialN,residualN}`, `forces.wheel`은 `{contactN,suspensionN,gravityN,netN,inertialN,residualN}`입니다. `inertialN`은 질량×가속도이며 `residualN`은 힘의 합에서 그 값을 뺀 수치 잔차입니다.
+
+기존 `holderReaction`의 의미와 기록은 그대로 유지합니다. 이 값은 서스펜션 전달하중 Fsusp이고, 상세값에서는 `forces.transmittedHolderN`으로 복사합니다. 고정 차체의 별도 외부 구속력 `forces.body.constraintN`과 같은 값이 아닙니다. 예를 들어 기본 질량의 평탄 정적 상태에서는 전달하중이 3138.128 N이고 외부 구속력은 0 N입니다. 고정 차체는 움직이지 않으므로 구속력이 생겨도 구속력의 기계적 동력은 0입니다.
+
+### 축약 모형의 모션비와 실제 표시 기하
+
+`motion`은 `{wheelTravelM,relativeVelocityMps,motionRatio,axialTravelM,axialVelocityMps,springAxialForceN,damperAxialForceN,staticWheelRateNpm}`입니다. 휠 상대 트래블 q와 속도 v는 압축 방향이 양수이고, `relativeVelocityMps = wheelVelocity − bodyVelocity`입니다.
+
+```text
+축약 축방향 변위 = mr q
+축약 축방향 속도 = mr v
+축방향 스프링 힘 = Fs / mr
+축방향 댐퍼 힘 = Fd / mr
+(Fwheel / mr) · (mr v) = Fwheel v
+```
+
+이는 정적 위치에서 정한 일정 모션비를 쓰는 축약 모형의 관계입니다. 화면 링크가 현재 위치에서 만드는 실제 길이 변화와 동일하다고 표시하지 않습니다. 예를 들어 기본 더블 위시본에서 휠 압축 80 mm의 `mr q`는 약 45.254 mm이고, 표시 기하의 스프링 양끝 길이 차이는 약 46.621 mm입니다. `staticWheelRateNpm`은 기존 `effectiveWheelRate`의 정적 접선이며, 비선형 스프링의 현재 접선 강성이 아닙니다. 스토퍼 힘은 휠 상대좌표에 직접 정의되어 있으므로 별도 축방향 부품력으로 환산하지 않습니다.
+
+### 순간 동력과 소산률
+
+`power.damperLossW = Fd v`는 기본 계수와 허용된 특성표 모두에서 0 이상입니다. 범프 또는 리바운드 스토퍼를 더 누르는 분기에서만 `power.stopLossW = 2200 v²`가 생기고, 복귀하거나 정지하면 0입니다. `stop`은 `{bumpPenetrationM,reboundPenetrationM,elasticN,dampingN,loading}`이며 실제 스토퍼 힘을 탄성 항과 한 방향 감쇠 항으로 나누어 표시합니다. 복귀 중 탄성 스토퍼가 에너지를 돌려주는 동력과 감쇠 소산률을 혼동하지 않습니다.
+
+`power`는 다음 순간 기계적 관계를 제공합니다.
+
+```text
+bodyKineticRateW  = ms · bodyVelocity · bodyAcceleration
+wheelKineticRateW = mu · wheelVelocity · wheelAcceleration
+kineticRateW      = bodyKineticRateW + wheelKineticRateW
+gravityW         = −ms g bodyVelocity − mu g wheelVelocity
+tireOnWheelW     = Ft · wheelVelocity
+springOnMassesW  = −Fs v
+damperOnMassesW  = −Fd v
+stopOnMassesW    = −Fstop v
+constraintW     = Rfixed · bodyVelocity
+residualW        = gravityW + tireOnWheelW + springOnMassesW
+                 + damperOnMassesW + stopOnMassesW + constraintW − kineticRateW
+```
+
+양수 동력은 두 질량의 운동에너지를 늘리는 방향입니다. 이 합은 현재 힘과 속도의 관계이며, 전체 계의 누적 에너지 보존 검증이나 새 에너지 원장이 아닙니다. 스프링에 저장된 절대 에너지, 타이어 발열, 부품 온도·열전달·파손 시간을 추가로 계산하지 않습니다.
+
+### 타이어의 제한 전후 힘
+
+`tire`는 `{compressionM,compressionVelocityMps,elasticTrialN,dampingTrialN,rawForceN,actualForceN,branch,reportedContact}`입니다. 압축 속도는 `roadVelocity − wheelVelocity`이며 시험 항은 `elasticTrialN = kt δ`, `dampingTrialN = ct δdot`, `rawForceN = elasticTrialN + dampingTrialN`입니다. 시험 항은 기하학적 접촉이 없을 때도 부호 그대로 계산하여 실제 적용력과 구분합니다.
+
+- `detached`: δ≤0이므로 시험 항의 합이 양수여도 실제 접지력은 0입니다.
+- `clamped`: δ>0이지만 시험 항의 합이 0 이하이므로 인장 방지 제한으로 실제 접지력이 0입니다.
+- `loaded`: δ>0이고 시험 항의 합이 양수여서 실제 접지력으로 적용됩니다.
+
+`actualForceN`은 새로 만든 힘이 아닌 기존 `contactForce`의 복사본입니다. 기존 `contact` 표시 문턱은 0.001 N이므로, 매우 작은 양의 힘에서는 `branch:'loaded'`여도 `reportedContact:false`일 수 있습니다. 원래 접지 이탈 통계는 이 표시 규칙을 그대로 사용합니다. 제한이 활성화된 상태에서 `ct δdot²`를 실제 타이어 감쇠 손실로 단정하지 않습니다. 예를 들어 양의 압축이 남아도 인장 제한으로 Ft=0이면 `tireOnWheelW`는 0입니다.
+
+### 특성표 우선순위와 에어 체적 하한
+
+`spring.source`는 `curve`, `coil`, `progressive`, `air` 중 실제 적용된 법칙을, `damper.source`는 `curve` 또는 `coefficient`를 나타냅니다. 양쪽의 `curveOutOfRange`는 기존 스냅샷의 해당 외삽 표시를 그대로 복사합니다. `damper.branch`는 휠 상대속도 0 이상에서 `compression`, 음수에서 `rebound`입니다. 특성표는 입력한 종류에만 우선하며, 예를 들어 댐퍼 표만 있으면 기본 에어 스프링은 계속 적용됩니다.
+
+`air`는 기본 에어 법칙이 실제 적용될 때만 객체이며, 다른 스프링 또는 스프링 특성표 사용 시 `null`입니다. 필드는 `{initialVolumeM3,rawVolumeM3,volumeM3,minimumVolumeM3,volumeLimited,initialAbsolutePressurePa,absolutePressurePa,gaugePressurePa}`입니다. `rawVolumeM3 = V0 − A mr q`, `minimumVolumeM3 = 0.15 V0`, `volumeM3`는 하한을 적용한 기존 계산 체적입니다. 하한 이하에서는 `volumeLimited:true`이며 압력은 이 보호 체적의 폴리트로픽 법칙으로 계산합니다. 절대압력과 대기압 101325 Pa를 뺀 게이지압력을 구분합니다.
+
+에어 초기 하중은 별도로 정적 평형에 맞추므로 축방향 스프링 힘이 단순히 `A × gaugePressurePa`와 같다고 표시하지 않습니다. 체적 하한도 벨로즈의 실제 최소 높이나 충돌을 새로 푼 것이 아닙니다. 하한 이후의 압축을 근거로 가스 유량·열역학 에너지·온도를 만들지 않습니다.
+
+### 상세 관찰 검증
+
+12개 추가 검사는 2개 홀더 모드×3개 스프링×3개 구조의 정적·동적 힘수지, 독립 운동에너지 중앙차분, 모션비의 가상일, 양쪽 스토퍼의 접근·복귀·경계, 타이어의 세 분기와 표시 문턱, 에어의 압력·체적 보호, 특성표 우선순위와 외삽 소산, 원본 설정·표본·전체 통계의 불변성을 확인합니다.
+
+```sh
+node --test tests/physics.test.mjs tests/component-curves.test.mjs tests/engineering.test.mjs tests/detail-model.test.mjs
+```

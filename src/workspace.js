@@ -1,5 +1,5 @@
 export function initWorkspace(){
-  const sections={bench:['#test-bench','.telemetry-section'],analysis:['#analysis-section','.results-panel'],experiments:['#experiment-workspace'],validation:['#engineering-validation']};
+  const sections={bench:['#test-bench','.telemetry-section','#detail-panel'],analysis:['#analysis-section','.results-panel'],experiments:['#experiment-workspace'],validation:['#engineering-validation']};
   const targets={'#test-bench':'bench','#analysis-section':'analysis','#experiment-workspace':'experiments','#engineering-validation':'validation'};
   const nav=document.querySelector('.workspace-nav');nav.setAttribute('role','tablist');
   let active='bench';

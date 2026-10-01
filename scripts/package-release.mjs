@@ -26,7 +26,7 @@ function addDirectory(directory, prefix) {
 addDirectory(dist, 'app/');
 // README illustrations retain their source-relative paths in the optional ZIP.
 addDirectory(path.join(root, 'public', 'screenshots'), 'public/screenshots/');
-const documentFiles=['README.md', 'docs/model.md', 'docs/consumer-release.md', 'docs/storage-recovery.md', 'docs/engineering-release.md', 'docs/THIRD-PARTY-NOTICES.md', 'docs/product-validation.md', 'docs/design-validation.md', 'docs/dashboard-validation.md', 'docs/dashboard-design.md', 'docs/desktop-release.md'];
+const documentFiles=['README.md', 'docs/model.md', 'docs/detail-refinement.md', 'docs/anatomy-detail.md', 'docs/consumer-release.md', 'docs/storage-recovery.md', 'docs/engineering-release.md', 'docs/THIRD-PARTY-NOTICES.md', 'docs/product-validation.md', 'docs/design-validation.md', 'docs/dashboard-validation.md', 'docs/dashboard-design.md', 'docs/desktop-release.md'];
 const evidenceFiles=new Set();
 for (const file of documentFiles) {
   const data=fs.readFileSync(path.join(root,file));entries.push({name:file,data});

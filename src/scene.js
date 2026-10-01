@@ -301,6 +301,7 @@ export class SuspensionScene {
     const signature = [config.structure, config.springType, config.tireRadius, config.holderMode].join('/');
     this.config=config; this.lastStateTime=-1; this.dirty=true;
     if (this.rigSignature === signature) return;
+    this.endInspection();
     this.lastGeometry=null; this.rigSignature = signature; this.needsFit = true; this.shadowsDirty=true;
     destroy(this.rig); destroy(this.linkGroup); destroy(this.labelGroup);
     const geom=getGeometry(config,0); this.buildHolder(geom,config); this.buildWheel(config);
@@ -347,12 +348,74 @@ export class SuspensionScene {
 
   setCamera(view) {
     this.cameraView=['iso','side','front'].includes(view) ? view : 'iso';
+    if(this.inspection) this.inspection.view=this.cameraView;
     this.fitComponent(); this.dirty=true;
   }
 
   setOptions(options) {
     this.options={...this.options,...options}; this.linkGroup.visible=this.options.links; this.forceGroup.visible=this.options.forces;
     this.labelGroup.visible=this.options.labels && this.componentFocus==='all'; this.beltMark.visible=this.labelGroup.visible; this.dirty=true;
+    this.applyInspectionVisibility();
+  }
+
+  getCameraState() {
+    return { position:this.camera.position.toArray(),target:this.controls.target.toArray(),zoom:this.camera.zoom,view:this.cameraView };
+  }
+
+  getInspection() { return this.inspection ? { id:this.inspection.id } : null; }
+
+  beginInspection(id) {
+    if (!['spring','damper'].includes(id) || !this.lastGeometry) return false;
+    if (this.inspection?.id===id) return true;
+    this.endInspection();
+    const visibility=new Map();
+    for (const node of [this.rig,this.testBench,this.roadMesh,this.beltEdge,this.floor,this.grid,this.contactShadow,this.labelGroup,this.forceGroup,...this.linkGroup.children]) visibility.set(node,node.visible);
+    this.inspection={id,camera:this.getCameraState(),visibility,center:null};
+    this.cameraView='iso';
+    this.applyInspectionVisibility(); this.fitInspection(); this.shadowsDirty=true; this.dirty=true; this.render(true); return true;
+  }
+
+  endInspection() {
+    if (!this.inspection) return false;
+    const saved=this.inspection; this.inspection=null;
+    saved.visibility.forEach((visible,node)=>{ node.visible=visible; });
+    this.spring.setInspection(null);
+    const damping=this.controls.enableDamping; this.controls.enableDamping=false; this.controls.update();
+    this.camera.position.fromArray(saved.camera.position); this.camera.zoom=saved.camera.zoom;
+    this.cameraView=saved.camera.view; this.camera.updateProjectionMatrix();
+    this.controls.target.fromArray(saved.camera.target); this.controls.update(); this.controls.enableDamping=damping;
+    this.grid.visible=this.studioMode==='technical';
+    this.contactShadow.visible=this.componentFocus!=='suspension'&&this.lastState?.contact!==false;
+    this.setOptions(this.options); this.shadowsDirty=true; this.dirty=true; this.render(true); return true;
+  }
+
+  applyInspectionVisibility() {
+    if (!this.inspection) return;
+    this.inspection.visibility.forEach((_,node)=>{ node.visible=false; });
+    this.linkGroup.visible=true; this.spring.group.visible=true;
+    this.spring.setInspection(this.inspection.id);
+  }
+
+  inspectionBounds() {
+    this.spring.group.updateWorldMatrix(true,true);
+    const bounds=new THREE.Box3();
+    const chamberNames=new Set(['hollow-damper-envelope-section','representative-piston-head','machined-rod-guide-section','rod-wiper-seal-section','damper-base-cap']);
+    this.spring.group.traverseVisible(node=>{ if(node.isMesh && (this.inspection?.id!=='damper'||chamberNames.has(node.name))) bounds.union(new THREE.Box3().setFromObject(node)); });
+    return bounds;
+  }
+
+  fitInspection() {
+    if (!this.inspection) return;
+    const bounds=this.inspectionBounds(); if(bounds.isEmpty()) return;
+    const target=bounds.getCenter(new THREE.Vector3());
+    const direction=this.inspection.view==='side' ? new THREE.Vector3(-1,.14,0).normalize() : this.inspection.view==='front' ? new THREE.Vector3(0,.14,1).normalize() : new THREE.Vector3(-1,.14,.45).applyQuaternion(this.spring.group.quaternion).normalize();
+    const right=new THREE.Vector3().crossVectors(UP,direction).normalize(),vertical=new THREE.Vector3().crossVectors(direction,right).normalize();
+    const ty=Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)),tx=ty*this.camera.aspect; let distance=.30;
+    for(const x of [bounds.min.x,bounds.max.x]) for(const y of [bounds.min.y,bounds.max.y]) for(const z of [bounds.min.z,bounds.max.z]) {
+      const delta=new THREE.Vector3(x,y,z).sub(target); distance=Math.max(distance,Math.abs(delta.dot(right))/tx+delta.dot(direction),Math.abs(delta.dot(vertical))/ty+delta.dot(direction));
+    }
+    this.camera.zoom=1; this.camera.updateProjectionMatrix(); this.camera.position.copy(target).addScaledVector(direction,distance*1.16);
+    this.controls.target.copy(target); this.controls.update(); this.inspection.center=target;
   }
 
   setQuality(quality='high') {
@@ -371,11 +434,13 @@ export class SuspensionScene {
     this.hemiLight.intensity=technical?.85:.52; this.keyLight.intensity=technical?2.25:2.35;
     this.rimLight.intensity=technical?.85:1.55; this.fillLight.intensity=technical?.60:.40; this.frontFill.intensity=technical?.35:.45;
     this.renderer.toneMappingExposure=technical?.86:1.04;
+    this.applyInspectionVisibility();
     this.configureEffects(); this.dirty=true; this.render(true);
     return this.studioMode;
   }
 
   setComponentFocus(focus='all') {
+    this.endInspection();
     this.componentFocus=['all','wheel','suspension'].includes(focus)?focus:'all';
     // Removing the wheel only in suspension inspection exposes the upright's
     // ball joints and all five rods without changing simulated geometry.
@@ -386,6 +451,7 @@ export class SuspensionScene {
   }
 
   fitComponent() {
+    if (this.inspection) { this.fitInspection(); return; }
     if (!this.rig || !this.wheel) return;
     this.scene.updateMatrixWorld(true);
     const focus=this.componentFocus || 'all';
@@ -496,6 +562,8 @@ export class SuspensionScene {
         const cloned=source.clone(true); cloned.visible=true;
         cloned.traverse(object=>{
           if(object.isSprite || object.isLine || object.isLight) { object.visible=false; return; }
+          if(object.userData.presentationOnly) { object.visible=false; return; }
+          if(object.userData.assemblyVisible!==undefined) object.visible=object.userData.assemblyVisible;
           if(!object.isMesh) return;
           if(!geometryCopies.has(object.geometry)) geometryCopies.set(object.geometry,object.geometry.clone());
           object.geometry=geometryCopies.get(object.geometry);
@@ -504,6 +572,9 @@ export class SuspensionScene {
         });
         // The wheel group is nested inside the rig and may be hidden in inspection.
         cloned.getObjectByName('wheel-and-brake')?.traverse(o=>{ if(o.name==='wheel-and-brake') o.visible=true; });
+        if(source===this.linkGroup && this.inspection) for(let i=0;i<source.children.length;i++) {
+          cloned.children[i].visible=this.inspection.visibility.get(source.children[i]) ?? true;
+        }
         exported.add(cloned);
       }
       const arrayBuffer=await new GLTFExporter().parseAsync(exported,{binary:true,onlyVisible:true,trs:false,maxTextureSize:1024});
@@ -557,13 +628,22 @@ export class SuspensionScene {
     this.contactShadow.position.set(hub[0],(state.rawRoadY||0)+.0015,hub[2]); this.contactShadow.visible=state.contact!==false&&this.componentFocus!=='suspension';
     this.contactArrow.position.set(hub[0],state.rawRoadY||0,.23); this.contactArrow.setLength(Math.min(.85,Math.max(.02,state.contactForce/9000)),.055,.026);
     this.springArrow.position.set(...b); this.springArrow.setDirection(vector(a).sub(vector(b)).normalize()); this.springArrow.setLength(Math.min(.8,Math.max(.02,Math.abs(state.springForce)/7000)),.055,.026);
+    if(this.inspection) {
+      this.applyInspectionVisibility();
+      const center=this.inspectionBounds().getCenter(new THREE.Vector3());
+      if(this.inspection.center) { const delta=center.clone().sub(this.inspection.center); this.camera.position.add(delta); this.controls.target.add(delta); }
+      this.inspection.center=center;
+    }
     this.shadowsDirty=true; if(firstPose||this.needsFit) this.fitComponent();
     this.controls.update(); this.dirty=true; this.render(); return geom;
   }
 
   getDiagnostics() {
     const now=performance.now();
-    return { structure:this.config.structure,springType:this.config.springType,quality:this.quality,studioMode:this.studioMode,componentFocus:this.componentFocus,components:[...this.components],triangles:this.renderer.info.render.triangles,draws:this.renderer.info.render.calls,geometries:this.renderer.info.memory.geometries,textures:this.renderer.info.memory.textures,coilBufferVertices:this.spring.coilGeometry.attributes.position.count,pixelRatio:this.renderer.getPixelRatio(),canvas:{width:this.renderer.domElement.width,height:this.renderer.domElement.height},shadowEnabled:this.renderer.shadowMap.enabled,shadowMapSize:this.renderer.shadowMap.enabled?this.keyLight.shadow.mapSize.x:0,environmentIntensity:this.scene.environmentIntensity,postprocessing:{ssao:this.postprocessingEnabled,samples:this.postprocessingEnabled?this.aoKernel:0,multisample:this.postprocessingEnabled?4:0},fpsLimit:60,renderCount:this.renderCount,framesLastSecond:this.frameTimes.filter(time=>now-time<=1000).length,cpuRenderMs:this.cpuRenderMs,exportCount:this.exportCount,fitBounds:this.fitBounds,wheelVisible:this.wheel.visible,model:'quarter-car vertical / illustrative linkage',units:'m',topology:{aArms:this.webs.length,rods:this.linkParts.filter(p=>p.assembly.group.name.includes('rod')).length,chassisMounts:this.mounts.length,struts:this.config.structure==='macpherson'?1:0} };
+    const visible=node=>{ for(let current=node;current;current=current.parent) if(!current.visible) return false; return true; };
+    const actualVisible={wheel:visible(this.wheel),road:visible(this.roadMesh),fixture:visible(this.rig),floor:visible(this.floor),grid:visible(this.grid),labels:visible(this.labelGroup),forces:visible(this.forceGroup),links:visible(this.linkGroup),spring:visible(this.spring.group)};
+    actualVisible.otherLinks=this.linkGroup.children.some(node=>node!==this.spring.group&&visible(node));
+    return { actualVisible,inspection:this.getInspection(),camera:this.getCameraState(),mechanical:this.spring.getDiagnostics(),structure:this.config.structure,springType:this.config.springType,quality:this.quality,studioMode:this.studioMode,componentFocus:this.componentFocus,components:[...this.components],triangles:this.renderer.info.render.triangles,draws:this.renderer.info.render.calls,geometries:this.renderer.info.memory.geometries,textures:this.renderer.info.memory.textures,coilBufferVertices:this.spring.coilGeometry.attributes.position.count,pixelRatio:this.renderer.getPixelRatio(),canvas:{width:this.renderer.domElement.width,height:this.renderer.domElement.height},shadowEnabled:this.renderer.shadowMap.enabled,shadowMapSize:this.renderer.shadowMap.enabled?this.keyLight.shadow.mapSize.x:0,environmentIntensity:this.scene.environmentIntensity,postprocessing:{ssao:this.postprocessingEnabled,samples:this.postprocessingEnabled?this.aoKernel:0,multisample:this.postprocessingEnabled?4:0},fpsLimit:60,renderCount:this.renderCount,framesLastSecond:this.frameTimes.filter(time=>now-time<=1000).length,cpuRenderMs:this.cpuRenderMs,exportCount:this.exportCount,fitBounds:this.fitBounds,wheelVisible:this.wheel.visible,model:'quarter-car vertical / illustrative linkage',units:'m',topology:{aArms:this.webs.length,rods:this.linkParts.filter(p=>p.assembly.group.name.includes('rod')).length,chassisMounts:this.mounts.length,struts:this.config.structure==='macpherson'?1:0} };
   }
 
   render(force=false) {
