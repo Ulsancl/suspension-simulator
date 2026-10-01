@@ -115,13 +115,27 @@ try {
   });
 
   await check('play advances and pause freezes simulation time', async () => {
-    const before = time(await snapshot());
-    await page.locator('#run-btn').click();
-    await page.waitForTimeout(300);
-    const running = time(await snapshot());
-    assert.ok(running > before, 'Play button advances physical time');
-    await page.locator('#run-btn').click();
-    const paused = time(await snapshot());
+    await pause();
+    // Exercise the real button handlers in one event task. A slow software
+    // renderer may intentionally pause between separate wall-clock clicks.
+    const transition = await page.evaluate(() => {
+      const button = document.querySelector('#run-btn');
+      const before = window.suspensionLab.snapshot().time;
+      button.click();
+      const playing = button.getAttribute('aria-pressed');
+      window.advanceTime(300);
+      const running = window.suspensionLab.snapshot().time;
+      button.click();
+      const stopped = button.getAttribute('aria-pressed');
+      const paused = window.suspensionLab.snapshot().time;
+      window.advanceTime(200);
+      return { before, playing, running, stopped, paused, after: window.suspensionLab.snapshot().time };
+    });
+    assert.equal(transition.playing, 'true');
+    assert.ok(transition.running > transition.before, 'Play button advances physical time');
+    assert.equal(transition.stopped, 'false');
+    assert.equal(transition.after, transition.paused);
+    const paused = transition.paused;
     await page.waitForTimeout(200);
     assert.equal(time(await snapshot()), paused);
   });
