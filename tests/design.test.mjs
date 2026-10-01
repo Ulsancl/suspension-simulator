@@ -211,7 +211,7 @@ try {
       await page.clock.runFor(300);
       const playing = JSON.parse(await page.evaluate(() => window.render_game_to_text()));
       assert.equal(playing.mode, 'running');
-      assert.ok(playing.state.time > beforeTime + .25, 'RAF playback still advances after the drag');
+      assert.ok(playing.state.time > beforeTime + .3*playing.config.timeScale-.03, 'RAF playback advances at the selected replay scale after the drag');
       assert.ok(Math.abs((await state()).end - panned.end) < 0.02, 'RAF samples preserve the panned view');
       await setRunning(false);
       await advance(1.5);

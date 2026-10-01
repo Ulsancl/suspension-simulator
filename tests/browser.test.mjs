@@ -343,6 +343,7 @@ try {
   });
 
   await check('stress settings stay finite across all roads and spring types', async () => {
+    await page.evaluate(() => window.suspensionLab.setWorkspaceView('bench'));
     await page.locator('#tab-setup').click();
     const rangeLimits = await page.locator('[data-config]').evaluateAll(elements =>
       Object.fromEntries(elements.filter(element => element.type === 'range').map(element =>

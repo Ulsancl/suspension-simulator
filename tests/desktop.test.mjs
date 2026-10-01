@@ -88,10 +88,10 @@ try {
       const stopped = button.getAttribute('aria-pressed');
       const paused = app.snapshot().time;
       window.advanceTime(200);
-      return { before, playing, running, stopped, paused, after: app.snapshot().time };
+      return { before, playing, running, stopped, paused, after: app.snapshot().time, timeScale: app.getConfig().timeScale };
     });
     assert.equal(transition.playing, 'true');
-    assert.ok(transition.running > transition.before + .25, 'Actual play handler advances physical time');
+    assert.ok(Math.abs(transition.running-transition.before-.3*transition.timeScale)<.009, 'Actual play handler advances physical time at the selected replay scale');
     assert.equal(transition.stopped, 'false');
     assert.equal(transition.after, transition.paused);
     const time = transition.paused;
