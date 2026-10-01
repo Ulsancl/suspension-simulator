@@ -1,0 +1,31 @@
+{
+  "appId": "local.suspensionlab.workbench",
+  "productName": "Suspension Lab",
+  "copyright": "Suspension Lab",
+  "asar": true,
+  "electronDist": "node_modules/electron/dist",
+  "directories": { "output": "release/windows", "buildResources": "desktop/assets" },
+  "files": ["desktop/**/*.cjs", "desktop/assets/app.ico", "dist/**/*", "package.json"],
+  "extraResources": [
+    { "from": "docs", "to": "docs", "filter": ["*.md"] },
+    { "from": "desktop/사용 안내.txt", "to": "사용 안내.txt" },
+    { "from": "public/THREE-LICENSE.txt", "to": "THREE-LICENSE.txt" }
+  ],
+  "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "desktop/assets/app.ico" },
+  "nsis": {
+    "artifactName": "Suspension-Lab-Setup-${version}.${ext}",
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": "always",
+    "createStartMenuShortcut": true,
+    "shortcutName": "Suspension Lab",
+    "installerIcon": "desktop/assets/app.ico",
+    "uninstallerIcon": "desktop/assets/app.ico",
+    "installerLanguages": ["ko_KR", "en_US"],
+    "displayLanguageSelector": false,
+    "runAfterFinish": true,
+    "deleteAppDataOnUninstall": false
+  }
+}

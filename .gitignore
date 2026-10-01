@@ -1,0 +1,8 @@
+node_modules/
+dist/
+output/
+.codex-remote-attachments/
+.codex/
+progress.md
+*.log
+release/

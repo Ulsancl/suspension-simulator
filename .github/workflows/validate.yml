@@ -1,0 +1,114 @@
+name: Validate Suspension Lab
+
+on:
+  push:
+    branches: [main, 'codex/**']
+    paths-ignore: ['transmission-lab/**', 'output/**', 'release/**']
+  pull_request:
+    paths-ignore: ['transmission-lab/**', 'output/**', 'release/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: suspension-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: 'true'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.19.0'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies and runtimes
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx --no-install playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify model and experiment data
+        run: npm test
+      - name: Build web bundle
+        run: npm run build
+      - name: Start local test servers
+        run: |
+          $taskDev = Start-Process -FilePath (Get-Command node).Source -ArgumentList @('node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'suspension-dev.log') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'suspension-dev-error.log')
+          $taskRelease = Start-Process -FilePath (Get-Command node).Source -ArgumentList @('scripts/serve-release.mjs') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'suspension-release.log') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'suspension-release-error.log')
+          "SUSPENSION_DEV_PID=$($taskDev.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SUSPENSION_RELEASE_PID=$($taskRelease.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          foreach ($taskUrl in @('http://127.0.0.1:5173', 'http://127.0.0.1:5175')) {
+            $taskReady = $false
+            for ($taskAttempt = 0; $taskAttempt -lt 45; $taskAttempt++) {
+              try { $taskResponse = Invoke-WebRequest -Uri $taskUrl -TimeoutSec 2; if ($taskResponse.StatusCode -eq 200) { $taskReady = $true; break } } catch { }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $taskReady) { throw "Test server unavailable: $taskUrl" }
+          }
+      - name: Verify browser interaction
+        run: npm run test:browser
+      - name: Verify previous experiment preservation and recovery
+        run: node tests/experiment-migration-browser.test.mjs
+      - name: Verify first guided A/B experiment
+        run: npm run test:guide
+      - name: Verify product workflows
+        run: npm run test:product
+      - name: Verify dashboard and layout
+        run: |
+          npm run test:dashboard
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:design
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify offline web release
+        run: npm run test:offline
+      - name: Verify source desktop app
+        run: npm run test:desktop
+      - name: Stop local test servers
+        if: always()
+        run: |
+          foreach ($taskProcessId in @($env:SUSPENSION_DEV_PID, $env:SUSPENSION_RELEASE_PID)) {
+            if ($taskProcessId) { Stop-Process -Id ([int]$taskProcessId) -ErrorAction SilentlyContinue }
+          }
+      - name: Package Windows installer
+        run: npm run package:desktop
+      - name: Verify independent desktop executable
+        run: |
+          $env:SUSPENSION_DESKTOP_EXE = Join-Path $env:GITHUB_WORKSPACE 'release/windows/win-unpacked/Suspension Lab.exe'
+          node tests/desktop.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify installer checksum and notices
+        run: |
+          $taskVersion = (Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json).version
+          $taskInstaller = "release/windows/Suspension-Lab-Setup-$taskVersion.exe"
+          $taskExpectedHash = (Get-Content -Raw -LiteralPath "$taskInstaller.sha256").Trim().Split(' ')[0]
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $taskInstaller).Hash -ne $taskExpectedHash) { throw 'Installer checksum mismatch' }
+          foreach ($taskNotice in @('LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources/THREE-LICENSE.txt', 'resources/docs/THIRD-PARTY-NOTICES.md')) {
+            if (-not (Test-Path -LiteralPath (Join-Path 'release/windows/win-unpacked' $taskNotice))) { throw "Missing notice: $taskNotice" }
+          }
+      - name: Retain tested installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: suspension-lab-windows-${{ github.sha }}
+          path: |
+            release/windows/Suspension-Lab-Setup-*.exe
+            release/windows/Suspension-Lab-Setup-*.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
