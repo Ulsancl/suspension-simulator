@@ -245,12 +245,28 @@ try {
     await page.locator('[data-camera="iso"]').click();
     await page.locator('canvas').first().click({ position: { x: 12, y: 12 } });
     await pause();
-    const before = time(await snapshot());
-    await page.keyboard.press('Space');
-    await page.waitForTimeout(200);
-    assert.ok(time(await snapshot()) > before);
-    await page.keyboard.press('Space');
-    const stopped = time(await snapshot());
+    // Keep both shortcut transitions in one event task, as for the play button
+    // above. Slow rendering can intentionally auto-pause between wall-clock
+    // key presses; a second Space would then resume instead of testing pause.
+    const shortcut = await page.evaluate(() => {
+      const pressSpace = () => document.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true }));
+      const button = document.querySelector('#run-btn');
+      const before = window.suspensionLab.snapshot().time;
+      pressSpace();
+      const playing = button.getAttribute('aria-pressed');
+      window.advanceTime(200);
+      const advanced = window.suspensionLab.snapshot().time;
+      pressSpace();
+      const paused = button.getAttribute('aria-pressed');
+      const stopped = window.suspensionLab.snapshot().time;
+      window.advanceTime(100);
+      return { before, playing, advanced, paused, stopped, after: window.suspensionLab.snapshot().time };
+    });
+    assert.equal(shortcut.playing, 'true', 'Space starts replay through the actual key handler');
+    assert.ok(shortcut.advanced > shortcut.before);
+    assert.equal(shortcut.paused, 'false', 'Space pauses replay through the actual key handler');
+    assert.equal(shortcut.after, shortcut.stopped, 'Paused keyboard state ignores deterministic time advancement');
+    const stopped = shortcut.stopped;
     await page.waitForTimeout(100);
     assert.equal(time(await snapshot()), stopped);
     await page.keyboard.press('r');
