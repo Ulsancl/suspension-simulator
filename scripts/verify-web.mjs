@@ -22,6 +22,7 @@ const suites = [
   ['product workflows', 'tests/product.test.mjs', devURL],
   ['dashboard', 'tests/dashboard.test.mjs', devURL],
   ['layout', 'tests/design.test.mjs', devURL],
+  ['mechanical inspection and live force details', 'tests/detail-browser.test.mjs', devURL],
   ['offline web release', 'tests/offline-release.test.mjs', releaseURL],
 ];
 

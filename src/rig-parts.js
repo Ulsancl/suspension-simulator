@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { SPRING_DETAIL, springLayout, createCoilGeometry, updateCoilGeometry, annularGeometry, revolvedProfile } from './mechanical-geometry.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const TAU = Math.PI * 2;
@@ -156,74 +157,121 @@ export function wishboneWeb(parent, mats) {
 
 export function springAssembly(parent, mats, springType, integrated = false) {
   const group = new THREE.Group(); group.name = springType === 'air' ? 'air-bellows-damper' : integrated ? 'integrated-macpherson-strut' : 'coilover'; parent.add(group);
-  const body = cylinder(group, integrated ? .043 : .031, 1, mats.red);
-  const piston = cylinder(group, .013, 1, mats.chrome);
-  const dustBoot = cylinder(group, .024, 1, mats.rubber);
-  const lowerEye = bearing(group, [0, 0, 0], mats, integrated ? .92 : .74, 'x');
-  const upperEye = bearing(group, [0, 0, 0], mats, integrated ? 1.05 : .74, 'x');
-  const upperSeat = cylinder(group, .071, .019, mats.darkMetal);
-  const lowerSeat = cylinder(group, .074, .022, mats.metal);
-  const adjusters = [-.006, .011].map(y => cylinder(group, .052, .011, mats.brass, [0, y, 0], 32));
-  const springStart = new THREE.Group(), springEnd = new THREE.Group(); group.add(springStart, springEnd);
-  const coilSegments = 240, sides = 8, positions = new Float32Array((coilSegments + 1) * sides * 3), normals = positions.slice(), indices = [];
-  for (let i = 0; i < coilSegments; i++) for (let s = 0; s < sides; s++) {
-    const a = i * sides + s, b = i * sides + (s + 1) % sides, c = (i + 1) * sides + s, d = (i + 1) * sides + (s + 1) % sides; indices.push(a, c, b, b, c, d);
+  const classified = [], sections = [], radius = integrated ? .043 : .031, bore = radius - .005;
+  const classify = (mesh, category, visible = true) => {
+    mesh.userData.assemblyVisible = visible; mesh.userData.detailCategory = category; mesh.visible = visible;
+    classified.push(mesh); return mesh;
+  };
+  const annulus = (name, inner, outer, height, material, category, sectionable = false, visible = true) => {
+    const mesh = classify(part(group, annularGeometry(inner, outer, height), material), category, visible); mesh.name = name;
+    if (sectionable) {
+      const cut = part(group, annularGeometry(inner, outer, height, .001, true), material); cut.name = `${name}-section`;
+      cut.visible = false; cut.userData.presentationOnly = true; sections.push({ mesh, cut, category });
+    }
+    return mesh;
+  };
+  const body = annulus('hollow-damper-envelope', bore, radius, 1, [mats.red,mats.metal,mats.chrome], 'damper', true);
+  const piston = classify(cylinder(group, .013, 1, mats.chrome), 'damper'); piston.name = 'sliding-chrome-rod';
+  const head = annulus('representative-piston-head', .013, bore - .0005, .014, mats.brass, 'damper');
+  const gland = annulus('machined-rod-guide', .0132, radius, .013, mats.chrome, 'damper', true);
+  const seal = annulus('rod-wiper-seal', .013, .020, .004, mats.rubber, 'damper', true);
+  const baseCap = classify(cylinder(group, bore, .008, mats.darkMetal), 'damper'); baseCap.name = 'damper-base-cap';
+  const bootProfile = [];
+  for (let i = 0; i <= 24; i++) bootProfile.push([i % 4 === 0 ? .019 : .024, -.5 + i / 24]);
+  bootProfile.push([.014, .5], [.014, -.5]);
+  const dustBoot = classify(part(group, revolvedProfile(bootProfile), mats.rubber), 'damper'); dustBoot.name = 'hollow-dust-bellows';
+  const bootSection = part(group, revolvedProfile(bootProfile, 64, true), mats.rubber); bootSection.name = 'dust-bellows-section'; bootSection.userData.presentationOnly = true; bootSection.visible = false;
+  sections.push({ mesh: dustBoot, cut: bootSection, category: 'damper' });
+  const lowerEye = classify(bearing(group, [0, 0, 0], mats, integrated ? .92 : .74, 'x'), 'damper');
+  const upperEye = classify(bearing(group, [0, 0, 0], mats, integrated ? 1.05 : .74, 'x'), 'damper');
+  const upperSeat = annulus('upper-annular-spring-seat', .025, .071, .019, mats.darkMetal, 'spring', false, springType !== 'air');
+  const lowerSeat = annulus('lower-annular-spring-seat', radius + .0005, .074, .022, mats.metal, 'spring', false, springType !== 'air');
+  const adjusters = [0, 1].map((_, i) => annulus(`threaded-preload-collar-${i + 1}`, radius + .0005, .052, .011, mats.brass, 'spring', false, springType !== 'air'));
+  for (const adjuster of adjusters) for (let i = 0; i < 12; i++) {
+    const a = i * TAU / 12, mark = block(adjuster, [.002, .005, .003], [.052 * Math.cos(a), 0, .052 * Math.sin(a)], mats.darkMetal, .0003); mark.rotation.y = -a;
   }
-  const coilGeometry = new THREE.BufferGeometry();
-  coilGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3)); coilGeometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3)); coilGeometry.setIndex(indices);
-  coilGeometry.boundingSphere = new THREE.Sphere();
-  const coil = part(group, coilGeometry, mats.spring); coil.name = springType === 'progressive' ? 'variable-pitch-coil' : 'helical-coil';
-  coil.visible = springType !== 'air';
+  const coilGeometry = createCoilGeometry();
+  const coil = classify(part(group, coilGeometry, mats.spring), 'spring', springType !== 'air'); coil.name = springType === 'progressive' ? 'variable-pitch-coil' : 'helical-coil';
   const bagProfile = [];
-  for (let i = 0; i <= 80; i++) {
-    const t = i / 80, bellows = Math.pow(Math.sin(t * Math.PI * 5), 2);
-    bagProfile.push(new THREE.Vector2(.066 + .018 * bellows, t - .5));
-  }
-  const bag = part(group, new THREE.LatheGeometry(bagProfile, 64), mats.rubber); bag.visible = springType === 'air'; bag.name = 'five-convolution-bellows';
-  const airCaps = [-1, 1].map(sign => cylinder(group, .079, .021, mats.metal)); airCaps.forEach(o => { o.visible = springType === 'air'; });
-  const reservoir = cylinder(group, .019, .18, mats.darkMetal, [.090, 0, 0]); reservoir.visible = !integrated;
-  const reservoirCap = cylinder(group, .021, .017, mats.brass, [.090, .089, 0]); reservoirCap.visible = !integrated;
-  const hose = ring(group, .059, .004, mats.rubber, [.045, -.03, 0], 32); hose.scale.set(.8, 1.3, 1); hose.visible = !integrated;
-  const topPlate = cylinder(group, .112, .028, mats.metal); topPlate.visible = integrated;
-  const topRubber = cylinder(group, .082, .035, mats.rubber); topRubber.visible = integrated;
+  for (let i = 0; i <= 80; i++) bagProfile.push([.066 + .018 * Math.sin(i / 80 * Math.PI * 5) ** 2, i / 80 - .5]);
+  for (let i = 80; i >= 0; i--) bagProfile.push([.063 + .018 * Math.sin(i / 80 * Math.PI * 5) ** 2, i / 80 - .5]);
+  const bag = classify(part(group, revolvedProfile(bagProfile), mats.rubber), 'spring', springType === 'air'); bag.name = 'hollow-five-convolution-bellows';
+  const bagSection = part(group, revolvedProfile(bagProfile, 64, true), mats.rubber); bagSection.name = 'air-bellows-section'; bagSection.userData.presentationOnly = true; bagSection.visible = false;
+  sections.push({ mesh: bag, cut: bagSection, category: 'spring' });
+  const airCaps = [0, 1].map(i => annulus(`air-bellows-end-cap-${i}`, i ? .013 : radius, .079, .021, mats.metal, 'spring', false, springType === 'air'));
+  const reservoir = classify(cylinder(group, .019, .18, mats.darkMetal, [.090, 0, 0]), 'damper', !integrated);
+  reservoir.name = 'remote-reservoir';
+  const reservoirCap = classify(cylinder(group, .021, .017, mats.brass, [.090, .089, 0]), 'damper', !integrated);
+  reservoirCap.name = 'reservoir-end-cap';
+  // Open-ended hose with fittings; fluid paths inside the housings are not solved.
+  const hoseCurve = new THREE.CatmullRomCurve3([new THREE.Vector3(radius, 0, 0), new THREE.Vector3(.065, -.034, 0), new THREE.Vector3(.112, -.028, 0), new THREE.Vector3(.109, .03, 0)]);
+  const hose = classify(part(group, new THREE.TubeGeometry(hoseCurve, 32, .004, 8, false), mats.rubber), 'damper', !integrated); hose.name = 'reservoir-connecting-hose';
+  const hoseFittings = [[radius,.0],[.109,.03]].map(([x,y])=>{
+    const fitting=annulus('reservoir-hose-fitting',.004,.008,.014,mats.brass,'damper',false,!integrated);
+    fitting.rotation.z=Math.PI/2; fitting.position.x=x; fitting.userData.offsetYM=y; return fitting;
+  });
+  const topPlate = classify(cylinder(group, .112, .028, mats.metal), 'damper', integrated);
+  topPlate.name = 'macpherson-top-mount';
+  const topRubber = classify(cylinder(group, .082, .035, mats.rubber), 'damper', integrated);
+  topRubber.name = 'mount-isolator';
   const studs = [];
   if (integrated) for (let i = 0; i < 3; i++) {
-    const angle = i * TAU / 3; studs.push(fastener(group, [Math.cos(angle) * .083, 0, Math.sin(angle) * .083], mats.chrome, .012, 'y'));
+    const angle = i * TAU / 3; studs.push(classify(fastener(group, [Math.cos(angle) * .083, 0, Math.sin(angle) * .083], mats.chrome, .012, 'y'), 'damper'));
   }
-  let lastLength = -1;
-  return { group, coilGeometry, update(a, b) {
+  let lastLength = -1, inspection = null, layout, minSampledTurnClearanceM = null;
+  const centerBuffer=new Float64Array((SPRING_DETAIL.longitudinalSegments+1)*3);
+  function applyInspection() {
+    classified.forEach(mesh => { mesh.visible = mesh.userData.assemblyVisible && (!inspection || mesh.userData.detailCategory === inspection); });
+    sections.forEach(({ mesh, cut, category }) => {
+      cut.visible = Boolean(inspection === category && mesh.userData.assemblyVisible);
+      cut.position.copy(mesh.position); cut.scale.copy(mesh.scale); if (cut.visible) mesh.visible = false;
+    });
+  }
+  return { group, coilGeometry, setInspection(id) { inspection = id; applyInspection(); }, update(a, b) {
     const length = align(group, b, a), minY = -length / 2, maxY = length / 2;
     const bodyLength = length * .43;
     body.scale.y = bodyLength; body.position.y = minY + length * .25;
-    piston.scale.y = length * .56; piston.position.y = minY + length * .67;
+    head.position.y = minY + length * (.035 + .43 * .55);
+    const rodBottom = head.position.y - .007, rodTop = minY + length * .95;
+    piston.scale.y = rodTop - rodBottom; piston.position.y = (rodTop + rodBottom) / 2;
+    gland.position.y = minY + length * .465 - .0065; seal.position.y = minY + length * .465 + .002;
+    baseCap.position.y = minY + length * .035 + .004;
     dustBoot.scale.y = length * .16; dustBoot.position.y = minY + length * .66;
     lowerEye.position.y = minY; upperEye.position.y = maxY;
-    const springBottom = minY + length * .24, springTop = minY + length * .80, springLength = springTop - springBottom;
-    upperSeat.position.y = springTop; lowerSeat.position.y = springBottom;
-    adjusters.forEach((adjuster, i) => { adjuster.position.y = springBottom - .024 - i * .017; });
-    bag.scale.y = springLength; bag.position.y = (springBottom + springTop) / 2;
-    airCaps[0].position.y = springBottom; airCaps[1].position.y = springTop;
+    layout = springLayout(length, springType, integrated);
+    upperSeat.position.y = layout.upperSeatYM; lowerSeat.position.y = layout.lowerSeatYM;
+    adjusters.forEach((adjuster, i) => { adjuster.position.y = layout.lowerSeatYM - .017 - i * .014; });
+    const springLength = layout.upperSeatYM - layout.lowerSeatYM;
+    bag.scale.y = springLength - .021; bag.position.y = (layout.lowerSeatYM + layout.upperSeatYM) / 2;
+    airCaps[0].position.y = layout.lowerSeatYM; airCaps[1].position.y = layout.upperSeatYM;
     reservoir.position.y = minY + length * .32; reservoirCap.position.y = reservoir.position.y + .095; hose.position.y = reservoir.position.y - .078;
+    hoseFittings.forEach(fitting=>{fitting.position.y=hose.position.y+fitting.userData.offsetYM;});
     topPlate.position.y = maxY - .015; topRubber.position.y = maxY - .045; studs.forEach(stud => { stud.position.y = maxY + .012; });
     if (springType !== 'air' && Math.abs(lastLength - length) > .000002) {
-      const turns = springType === 'progressive' ? 10 : 8, radius = .057, wire = .0075;
-      for (let i = 0; i <= coilSegments; i++) {
-        const t = i / coilSegments, rise = springType === 'progressive' ? (Math.exp(t * 1.7) - 1) / (Math.exp(1.7) - 1) : t;
-        const angle = t * turns * TAU, ca = Math.cos(angle), sa = Math.sin(angle);
-        const pitch = springLength * (springType === 'progressive' ? 1.7 * Math.exp(t * 1.7) / (Math.exp(1.7) - 1) : 1) / (turns * TAU);
-        const magnitude = Math.hypot(radius, pitch), cx = pitch * sa / magnitude, cy = radius / magnitude, cz = -pitch * ca / magnitude;
-        for (let s = 0; s < sides; s++) {
-          const phase = s * TAU / sides, cp = Math.cos(phase), sp = Math.sin(phase), nx = ca * cp + cx * sp, ny = cy * sp, nz = sa * cp + cz * sp, index = (i * sides + s) * 3;
-          positions[index] = ca * radius + nx * wire;
-          positions[index + 1] = springBottom + rise * springLength + ny * wire;
-          positions[index + 2] = sa * radius + nz * wire;
-          normals[index] = nx; normals[index + 1] = ny; normals[index + 2] = nz;
-        }
+      updateCoilGeometry(coilGeometry, layout);
+      const p=coilGeometry.attributes.position, sides=SPRING_DETAIL.radialSegments, steps=SPRING_DETAIL.longitudinalSegments;
+      for(let i=0;i<=steps;i++) for(let axis=0;axis<3;axis++) centerBuffer[i*3+axis]=(p.array[i*sides*3+axis]+p.array[(i*sides+sides/2)*3+axis])*.5;
+      let minDistance=Infinity;
+      for(let i=0;i<=steps;i++) for(let d=Math.floor(steps/layout.turns*.875);d<=Math.ceil(steps/layout.turns*1.125)&&i+d<=steps;d++) {
+        const a=i*3,b=(i+d)*3; minDistance=Math.min(minDistance,Math.hypot(centerBuffer[a]-centerBuffer[b],centerBuffer[a+1]-centerBuffer[b+1],centerBuffer[a+2]-centerBuffer[b+2]));
       }
-      coilGeometry.attributes.position.needsUpdate = true; coilGeometry.attributes.normal.needsUpdate = true;
-      coilGeometry.boundingSphere.center.set(0, (springBottom + springTop) / 2, 0); coilGeometry.boundingSphere.radius = Math.hypot(springLength / 2 + wire, radius + wire);
-      lastLength = length;
+      minSampledTurnClearanceM=minDistance-SPRING_DETAIL.wireRadiusM*2;
     }
+    lastLength = length; applyInspection();
+  }, getDiagnostics() {
+    group.updateWorldMatrix(true, true);
+    const world = mesh => mesh.getWorldPosition(new THREE.Vector3()).toArray();
+    const bounds = mesh => { const box = new THREE.Box3().setFromObject(mesh); return { min: box.min.toArray(), max: box.max.toArray() }; };
+    return { lengthM: lastLength, integrated, springType, turns: layout?.turns, wireRadiusM: SPRING_DETAIL.wireRadiusM,
+      centerRadiusM: SPRING_DETAIL.centerRadiusM, usableSpanM: layout?.spanM, minimumSpanM: layout?.minimumSpanM,
+      displayEnvelopeValid: springType === 'air' || layout?.displayEnvelopeValid, minSampledTurnClearanceM,
+      coilBounds: springType === 'air' ? null : bounds(coil), lowerEye: world(lowerEye), upperEye: world(upperEye),
+      seats: { lowerYM: lowerSeat.position.y, upperYM: upperSeat.position.y, lowerTopYM: lowerSeat.position.y + lowerSeat.geometry.boundingBox.max.y, upperBottomYM: upperSeat.position.y + upperSeat.geometry.boundingBox.min.y,
+        lowerContactYM: springType==='air'?null:coilGeometry.boundingBox?.min.y, upperContactYM: springType==='air'?null:coilGeometry.boundingBox?.max.y, lowerBoreRadiusM: radius + .0005, upperBoreRadiusM: .025 },
+      damper: { bodyLengthM: body.scale.y, bodyBoreRadiusM: bore, rodRadiusM: .013, guideBoreRadiusM: .0132, pistonRadiusM: bore - .0005,
+        pistonYM: head.position.y, guideYM: gland.position.y, bodyBottomYM: body.position.y - body.scale.y / 2, bodyTopYM: body.position.y + body.scale.y / 2,
+        variableEnvelope: true, hydraulicCircuitSolved: false },
+      visibleMeshes: group.children.filter(o => o.visible).map(o => o.name), cutaway: sections.some(({cut})=>cut.visible) ? 'closed half-section; internal parts retain full dimensions' : null };
   }};
 }
 

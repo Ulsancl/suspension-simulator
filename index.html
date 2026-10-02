@@ -15,7 +15,7 @@
       <header class="app-header">
         <a class="brand" href="/" aria-label="Suspension Lab 홈">
           <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 4h16M8 28h16M16 4v4l-6 3 12 4-12 4 12 3-6 2v4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></span>
-          <span><strong>SUSPENSION <span>LAB</span> <em class="product-version">v1.3</em></strong><small>SUSPENSION EXPLORER</small></span>
+          <span><strong>SUSPENSION <span>LAB</span> <em class="product-version">v1.4</em></strong><small>SUSPENSION EXPLORER</small></span>
         </a>
         <div class="header-actions">
           <button id="install-app-btn" class="button button-small button-quiet" type="button" hidden>앱 설치</button>
@@ -123,6 +123,7 @@
         <div class="test-area">
           <section class="scene-panel" id="test-bench" aria-label="3D 테스트 리그">
             <div class="scene-heading"><div class="scene-title"><span class="eyebrow">SINGLE WHEEL · DYNAMIC TEST BENCH</span><h2 id="structure-label">더블 위시본</h2><p id="structure-description">상·하 A암으로 휠을 지지하는 구조. 링크의 움직임과 캠버 변화를 관찰합니다.</p></div><div class="bench-tag"><span class="dot cyan"></span>3D TEST RIG <span>01</span></div></div>
+              <div id="inspection-banner" hidden><span id="inspection-title">구조 확대</span><button id="inspection-banner-exit" type="button">원래 시점으로</button></div>
             <div id="viewport">
               <div class="viewport-topbar">
                 <div class="camera-controls" role="group" aria-label="카메라 방향"><button class="active" type="button" data-camera="iso" aria-pressed="true">3D</button><button type="button" data-camera="side" aria-pressed="false">측면</button><button type="button" data-camera="front" aria-pressed="false">정면</button></div>
@@ -148,6 +149,8 @@
               <article class="metric-card"><span class="metric-label">휠 캠버<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 16 11 3m-2 13 5-13M3 16h14" /></svg></span><div class="metric-reading"><strong id="camber-value">0.00</strong><span>°</span></div><small>정면 기준 휠 기울기</small><div class="metric-rule lilac-rule"></div></article>
             </div>
           </section>
+
+          <section id="detail-panel" class="detail-panel" aria-label="현재 시험의 힘과 부품 상세"></section>
 
           <section class="analysis-section" id="analysis-section" aria-labelledby="analysis-title">
             <div class="analysis-heading"><div><span class="eyebrow">RESPONSE ANALYSIS</span><h2 id="analysis-title">응답 분석</h2><p>현재 실시간 시험의 변위·힘·가속도. 커서를 공유해 같은 시점의 응답을 확인합니다.</p></div><div class="analysis-toolbar"><label for="analysis-layout">배치</label><select id="analysis-layout" aria-label="분석 그래프 배치"><option value="overview">한눈에 보기</option><option value="stacked">세로 보기</option></select><button id="chart-focus-exit" type="button" class="button button-small button-outline" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h6v6H3V3Zm8 0h6v6h-6V3ZM3 11h6v6H3v-6Zm8 0h6v6h-6v-6Z" /></svg>전체 그래프</button><label for="chart-window">표시 구간</label><select id="chart-window"><option value="4">4초</option><option value="8" selected>8초</option><option value="15">15초</option><option value="30">30초</option></select><label class="toggle-label" for="chart-follow"><input id="chart-follow" type="checkbox" checked /><span>실시간 추적</span></label><button class="button button-small button-outline" id="chart-reset-view" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7a6.4 6.4 0 1 1-.25 5M4 3v4h4" /></svg>현재 구간</button></div></div>

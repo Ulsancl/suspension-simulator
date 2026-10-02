@@ -87,6 +87,8 @@ jobs:
           name: suspension-desktop-verification-${{ github.sha }}
           path: |
             output/desktop*/report.json
+            output/detail-browser/*.json
+            output/detail-browser/*.png
             output/desktop*/installed-report.json
             output/desktop*/failure.json
             output/desktop*/failure-state.json

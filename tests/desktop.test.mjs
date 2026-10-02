@@ -226,6 +226,32 @@ async function runChecks() {
     assert.equal(await page.evaluate(() => window.suspensionLab.snapshot().time), time);
     await page.evaluate(() => window.suspensionLab.setConfig({ road: 'bump', speed: 45, compressionDamping: 2300 }));
   });
+  await check('live force details and reversible mechanical inspection preserve native project data', async () => {
+    await page.locator('#detail-disclosure > summary').click();
+    const before = await page.evaluate(() => {
+      const lab = window.suspensionLab; lab.setRunning(false); lab.advance(.3);
+      return { state: lab.snapshot(), config: lab.getConfig(), records: lab.getExperiments(), camera: lab.getSceneDiagnostics().camera };
+    });
+    await page.locator('#inspect-damper').click();
+    const observed = await page.evaluate(() => ({ detail: window.suspensionLab.getDetail(), inspection: window.suspensionLab.getInspection(), raw: Number(document.querySelector('[data-detail-key="forces.wheel.netN"]').dataset.value), diagnostics: window.suspensionLab.getSceneDiagnostics() }));
+    assert.equal(observed.inspection.id, 'damper');
+    assert.ok(observed.diagnostics.mechanical.cutaway);
+    assert.ok(Math.abs(observed.raw - before.config.unsprungMass * before.state.wheelAcceleration) < 1e-6);
+    assert.equal(observed.detail.timeS, before.state.time);
+    const inspectedProject = path.join(output, 'inspection-project.suspension.json');
+    await saveDialog(inspectedProject);
+    await page.locator('#save-project-btn').click();
+    const saved = await poll('inspection project saved', () => fs.readFile(inspectedProject, 'utf8').then(JSON.parse).catch(() => null), Boolean);
+    assert.deepEqual(saved.config, before.config);
+    assert.equal(JSON.stringify(saved).includes('inspection'), false, 'Temporary mechanical view is not project state');
+    await page.locator('#exit-inspection').click();
+    const after = await page.evaluate(() => ({ state: window.suspensionLab.snapshot(), config: window.suspensionLab.getConfig(), records: window.suspensionLab.getExperiments(), camera: window.suspensionLab.getSceneDiagnostics().camera, inspection: window.suspensionLab.getInspection() }));
+    assert.equal(after.inspection, null); assert.deepEqual(after.state, before.state);
+    assert.deepEqual(after.config, before.config); assert.deepEqual(after.records, before.records);
+    for (const key of ['position', 'target']) for (let i = 0; i < 3; i++) assert.ok(Math.abs(after.camera[key][i] - before.camera[key][i]) < 1e-8, `restored ${key}[${i}]`);
+    assert.equal(after.camera.zoom, before.camera.zoom); assert.equal(after.camera.view, before.camera.view);
+    await page.locator('#detail-disclosure > summary').click();
+  });
   await check('native menus select every workspace and show help', async () => {
     for (const value of ['bench', 'analysis', 'experiments', 'validation']) {
       await app.evaluate(({ BrowserWindow }, command) => BrowserWindow.getAllWindows()[0].webContents.send('suspension:command', command), 'view-' + value);

@@ -9,6 +9,8 @@ import { initOffline } from './offline.js';
 import { initDashboard } from './dashboard.js';
 import { initDesktop } from './desktop.js';
 import { advancePlayback } from './playback-clock.js';
+import { initDetailPanel } from './detail-panel.js';
+import { suspensionDetail } from './detail-model.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -24,6 +26,7 @@ let running = false, singleRun = false, scene, last = performance.now(), uiElaps
 let comparisons = { A: null, B: null };
 let appliedSceneOptions = '';
 let product, engineering;
+const detailPanel = initDetailPanel();
 
 function message(text, error = false) {
   let toast = $('#toast');
@@ -118,6 +121,12 @@ function update(forceCharts = false) {
   if (forceCharts) charts.paint();
   engineering?.update(c, m);
   dashboard.update(s,c,m);
+  const diagnostics = scene?.getDiagnostics?.() || {};
+  detailPanel.update(c, s, diagnostics);
+  for (const button of $$('[data-camera]')) {
+    const active = button.dataset.camera === diagnostics.camera?.view;
+    button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+  }
   if ($('#render-detail-summary')) $('#render-detail-summary').textContent = ({standard:'BALANCED · 실시간 렌더링',high:'HIGH DETAIL · 스튜디오 렌더링',ultra:'ULTRA DETAIL · 정밀 렌더링'}[$('#render-quality')?.value] || 'HIGH DETAIL · 스튜디오 렌더링');
   options();
 }
@@ -187,13 +196,19 @@ $('#help-btn').addEventListener('click', () => $('#help-dialog').showModal());
 $('#close-help-btn').addEventListener('click', () => $('#help-dialog').close());
 $('#help-dialog').addEventListener('click', event => { if (event.target === $('#help-dialog')) $('#help-dialog').close(); });
 document.addEventListener('keydown', event => {
-  if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(document.activeElement?.tagName) || $('#help-dialog').open) return;
+  if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'SUMMARY'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable || $('#help-dialog').open) return;
   if (event.code === 'Space') { event.preventDefault(); setRunning(!running); }
   if (event.code === 'KeyR') reset();
   if (event.code === 'KeyF') { const promise = document.fullscreenElement ? document.exitFullscreen() : $('#viewport').requestFullscreen(); promise?.catch(() => message('이 환경에서는 전체 화면을 사용할 수 없습니다.')); }
 });
 document.addEventListener('visibilitychange', () => { last = performance.now(); });
 $('#viewport').addEventListener('scene-error', event => { setRunning(false); message(event.detail, true); });
+function beginInspection(id) { const result = scene?.beginInspection?.(id) || false; update(); return result; }
+function endInspection() { const result = scene?.endInspection?.() || false; update(); return result; }
+$('#inspect-spring').addEventListener('click', () => beginInspection('spring'));
+$('#inspect-damper').addEventListener('click', () => beginInspection('damper'));
+$('#exit-inspection').addEventListener('click', endInspection);
+$('#inspection-banner-exit').addEventListener('click', endInspection);
 try {
   scene = new SuspensionScene($('#viewport'), sim.config); scene.setQuality?.($('#render-quality')?.value || 'high'); $('#viewport-loading').hidden = true;
 } catch (error) {
@@ -228,6 +243,8 @@ window.suspensionLab = {
   getComparisons: () => structuredClone(comparisons),
   getChartState: () => charts.getState(),
   getSceneDiagnostics: () => scene?.getDiagnostics?.() || {},
+  getDetail: () => suspensionDetail(sim.config, sim.snapshot()),
+  getInspection: () => scene?.getInspection?.() || null, beginInspection, endInspection,
   productReady: product.ready,
   getProductState: product.getState, getExperiments: product.getRecords, getSweep: product.getSweep,
   getMeasurementState: engineering.getState, getMeasurementResult: engineering.getResult,
