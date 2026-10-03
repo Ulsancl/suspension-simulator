@@ -23,15 +23,43 @@ function log(message) {
   try { fs.appendFileSync(path.join(app.getPath('userData'), 'desktop.log'), `${new Date().toISOString()} ${message}\n`); } catch { /* Logging must not prevent launch. */ }
 }
 function trustedURL(value) {
-  try { const url = new URL(value); return url.protocol === 'app:' && url.host === 'suspension'; } catch { return false; }
+  try { const url = new URL(value); return url.protocol === 'app:' && url.host === 'suspension' && !url.username && !url.password; } catch { return false; }
 }
 function trustedSender(event) {
-  if (!mainWindow || event.sender !== mainWindow.webContents || !trustedURL(event.senderFrame?.url)) throw new Error('Invalid application sender');
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !trustedURL(event.senderFrame?.url)) throw new Error('Invalid application sender');
 }
 function command(value) { mainWindow?.webContents.send('suspension:command', value); }
 function saveResult(value) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('suspension:save-result', value); }
 function safeFileName(value) {
-  return path.basename(String(value || 'suspension-project.suspension.json')).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').slice(0, 160) || 'suspension-project.suspension.json';
+  let name = path.basename(typeof value === 'string' ? value : 'suspension-project.suspension.json')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').slice(0, 160);
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `suspension-${name}`;
+  return name || 'suspension-project.suspension.json';
+}
+
+function projectText(contents) {
+  if (typeof contents !== 'string' || Buffer.byteLength(contents, 'utf8') > MAX_PROJECT_BYTES) {
+    throw new Error('프로젝트 파일은 40 MiB 이하인 JSON 텍스트여야 합니다.');
+  }
+  let parsed;
+  try { parsed = JSON.parse(contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents); }
+  catch { throw new Error('JSON 프로젝트 파일을 읽을 수 없습니다. 원본 파일은 변경하지 않습니다.'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.type !== 'suspension-lab-project') {
+    throw new Error('지원하지 않는 프로젝트 파일입니다. 원본 파일은 변경하지 않습니다.');
+  }
+  return contents;
+}
+
+async function projectTarget(target, allowMissing = false) {
+  if (typeof target !== 'string' || !path.isAbsolute(target)) throw new Error('프로젝트 파일의 절대 경로를 확인해 주세요.');
+  const parent = path.dirname(target), realParent = await fsp.realpath(parent);
+  const normalized = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+  if (normalized(parent) !== normalized(realParent)) throw new Error('연결된 폴더 대신 원래 프로젝트 폴더를 선택해 주세요.');
+  let stat;
+  try { stat = await fsp.lstat(target); }
+  catch (error) { if (allowMissing && error.code === 'ENOENT') return null; throw error; }
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('폴더나 연결 파일 대신 일반 JSON 파일을 선택해 주세요.');
+  return stat;
 }
 
 async function serveBundle(request) {
@@ -65,22 +93,34 @@ function registerFileActions() {
     try {
       const result = await dialog.showOpenDialog(mainWindow, { title: '서스펜션 프로젝트 열기', properties: ['openFile'], filters: [{ name: '서스펜션 프로젝트', extensions: ['json'] }] });
       if (result.canceled || !result.filePaths[0]) return { canceled: true };
-      const target = result.filePaths[0], stat = await fsp.stat(target);
+      const target = result.filePaths[0], stat = await projectTarget(target);
       if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 40 MiB 이하인 JSON 파일이어야 합니다.');
-      return { canceled: false, content: await fsp.readFile(target, 'utf8'), path: target };
+      const handle = await fsp.open(target, 'r');
+      let bytes;
+      try {
+        const opened = await handle.stat();
+        if (!opened.isFile() || opened.size > MAX_PROJECT_BYTES || opened.dev !== stat.dev || opened.ino !== stat.ino) {
+          throw new Error('프로젝트 파일이 변경되었습니다. 다시 선택해 주세요.');
+        }
+        bytes = await handle.readFile();
+      } finally { await handle.close(); }
+      if (bytes.byteLength > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 40 MiB 이하여야 합니다.');
+      return { canceled: false, content: projectText(bytes.toString('utf8')), path: target };
     } finally { nativeBusy--; }
   });
   ipcMain.handle('suspension:save-project', async (event, payload) => {
     trustedSender(event);
     if (nativeBusy) return { canceled: true };
-    if (!payload || typeof payload.contents !== 'string' || Buffer.byteLength(payload.contents) > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일 크기가 너무 큽니다.');
+    if (!payload || typeof payload !== 'object') throw new Error('프로젝트 파일 내용을 확인해 주세요.');
     nativeBusy++;
     let temporary;
     try {
+      const contents = projectText(payload.contents);
       const result = await dialog.showSaveDialog(mainWindow, { title: '서스펜션 프로젝트 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(payload.name)), filters: [{ name: '서스펜션 프로젝트', extensions: ['json'] }] });
       if (result.canceled || !result.filePath) return { canceled: true };
+      await projectTarget(result.filePath, true);
       temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`;
-      await fsp.writeFile(temporary, payload.contents, { encoding: 'utf8', flag: 'wx' });
+      await fsp.writeFile(temporary, contents, { encoding: 'utf8', flag: 'wx' });
       await fsp.rename(temporary, result.filePath);
       temporary = null;
       return { canceled: false, path: result.filePath };
