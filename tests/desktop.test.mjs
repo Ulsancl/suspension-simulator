@@ -26,6 +26,10 @@ const progressPath = path.join(output, 'progress.jsonl');
 const processLogPath = path.join(output, `desktop-${runId}.log`);
 const processRecords = [], checkResults = [], cleanupErrors = [], diagnosticErrors = [];
 const expectedProbeErrors = [], expectedProbeRequests = [];
+const expectedProbeConsoleMessages = new Set([
+  `Connecting to 'https://example.com/' violates the following Content Security Policy directive: "connect-src 'self'". The action has been blocked.`,
+  `Fetch API cannot load https://example.com/. Refused to connect because it violates the document's Content Security Policy.`,
+]);
 const runFile = promisify(execFile);
 let currentCheck = 'launch', lastOperation = 'initialization', primaryError = null;
 let suiteAborted = false, expectedProbeActive = false, processTail = '';
@@ -106,7 +110,7 @@ async function launch() {
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', msg => {
     if (msg.type() !== 'error') return;
-    if (expectedProbeActive && (msg.text().includes('https://example.com/') || msg.location().url === 'https://example.com/')) expectedProbeErrors.push(msg.text());
+    if (expectedProbeActive && (msg.location().url === 'https://example.com/' || expectedProbeConsoleMessages.has(msg.text()))) expectedProbeErrors.push(msg.text());
     else errors.push(msg.text());
   });
   page.on('request', request => {
@@ -326,8 +330,8 @@ async function runChecks() {
   });
   await check('native project IPC rejects linked folders and malformed save data', async () => {
     const original = await fs.readFile(projectPath, 'utf8');
-    const realDirectory = path.join(output, 'real-project-folder');
-    const linkedDirectory = path.join(output, 'linked-project-folder');
+    const realDirectory = path.join(profile, 'real-project-folder');
+    const linkedDirectory = path.join(profile, 'linked-project-folder');
     await fs.mkdir(realDirectory, { recursive: true });
     const realProject = path.join(realDirectory, 'project.json');
     await fs.writeFile(realProject, original);
