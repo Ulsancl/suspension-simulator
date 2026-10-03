@@ -324,6 +324,23 @@ async function runChecks() {
     await dialogCalled('open', badBefore);
     assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
   });
+  await check('native project IPC rejects linked folders and malformed save data', async () => {
+    const original = await fs.readFile(projectPath, 'utf8');
+    const realDirectory = path.join(output, 'real-project-folder');
+    const linkedDirectory = path.join(output, 'linked-project-folder');
+    await fs.mkdir(realDirectory, { recursive: true });
+    const realProject = path.join(realDirectory, 'project.json');
+    await fs.writeFile(realProject, original);
+    await fs.symlink(realDirectory, linkedDirectory, process.platform === 'win32' ? 'junction' : 'dir');
+    const linkedProject = path.join(linkedDirectory, 'project.json');
+    await openDialog(linkedProject);
+    await assert.rejects(page.evaluate(() => window.suspensionDesktop.openProject()), /연결된 폴더/);
+    await saveDialog(linkedProject);
+    await assert.rejects(page.evaluate(contents => window.suspensionDesktop.saveProject({ contents, name: 'project.json' }), original), /연결된 폴더/);
+    await assert.rejects(page.evaluate(() => window.suspensionDesktop.saveProject({ contents: '{broken', name: 'project.json' })), /JSON 프로젝트/);
+    assert.equal(await fs.readFile(realProject, 'utf8'), original);
+    assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
+  });
   await check('native export creates CSV, report, PNG and GLB files', async () => {
     await view('experiments');
     const csv = await exportedFile('[data-record-action="export"]', 'response.csv'); assert.match(csv.toString('utf8'), /time/);
