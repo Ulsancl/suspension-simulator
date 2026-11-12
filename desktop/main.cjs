@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell, scr
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { normalizeWindowState } = require('./window-state.cjs');
 
 const APP_URL = 'app://suspension/';
 const APP_NAME = 'Suspension Lab';
@@ -153,9 +154,9 @@ function createWindow() {
   const area = screen.getPrimaryDisplay().workArea;
   let saved = {};
   try { saved = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'window.json'), 'utf8')); } catch { /* First launch. */ }
+  const { maximized, ...bounds } = normalizeWindowState(saved, area);
   mainWindow = new BrowserWindow({
-    width: Math.min(Number(saved.width) || 1440, area.width), height: Math.min(Number(saved.height) || 1000, area.height),
-    minWidth: Math.min(960, area.width), minHeight: Math.min(640, area.height),
+    ...bounds,
     title: APP_NAME, show: false, backgroundColor: '#14191e', icon: path.join(__dirname, 'assets', 'app.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
   });
@@ -172,7 +173,7 @@ function createWindow() {
     dialog.showErrorBox(APP_NAME, '프로그램 파일을 읽지 못했습니다. 설치 파일로 다시 설치해 주세요.');
     app.quit();
   });
-  mainWindow.once('ready-to-show', () => { if (saved.maximized) mainWindow.maximize(); mainWindow.show(); });
+  mainWindow.once('ready-to-show', () => { if (maximized) mainWindow.maximize(); mainWindow.show(); });
   mainWindow.on('close', event => {
     if (calculationBusy || nativeBusy || downloads.size) {
       event.preventDefault();
