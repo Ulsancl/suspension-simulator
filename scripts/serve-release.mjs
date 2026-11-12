@@ -15,6 +15,7 @@ const server = http.createServer((request, response) => {
   if (request.method !== 'GET' && request.method !== 'HEAD') { response.setHeader('Allow', 'GET, HEAD'); return finish(405, 'Method not allowed'); }
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
+    if (pathname.includes('\\') || pathname.split('/').includes('..')) return finish(403, 'Forbidden');
     let candidate = path.resolve(root, '.' + pathname);
     if (!within(candidate) || pathname.includes('\0')) return finish(403, 'Forbidden');
     if (pathname.endsWith('/')) candidate = path.join(candidate, 'index.html');
