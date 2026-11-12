@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const version=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8')).version;
-const output = path.join(root, 'output', 'playwright', `storage-migration-v${version}`);
+const output = artifactDirectory(root, path.join(root, 'output', 'playwright', `storage-migration-v${version}`));
 const baseURL = process.env.SUSPENSION_TEST_URL || 'http://127.0.0.1:5186';
 await fs.mkdir(output, { recursive: true });
 const ownedServer = process.env.SUSPENSION_TEST_URL ? null : await createServer({ root, server: { host: '127.0.0.1', port: 5186, strictPort: true, watch: { ignored: ['**/output/**', '**/release/**', '**/dist/**'] } } });

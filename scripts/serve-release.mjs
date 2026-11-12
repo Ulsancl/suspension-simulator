@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,7 @@ const server = http.createServer((request, response) => {
   if (request.method !== 'GET' && request.method !== 'HEAD') { response.setHeader('Allow', 'GET, HEAD'); return finish(405, 'Method not allowed'); }
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
+    if (pathname.includes('\\') || pathname.split('/').includes('..')) return finish(403, 'Forbidden');
     let candidate = path.resolve(root, '.' + pathname);
     if (!within(candidate) || pathname.includes('\0')) return finish(403, 'Forbidden');
     if (pathname.endsWith('/')) candidate = path.join(candidate, 'index.html');
@@ -34,4 +36,15 @@ const server = http.createServer((request, response) => {
   } catch (error) { return finish(error instanceof URIError ? 400 : 404, 'Invalid path'); }
 });
 server.on('error', error => { console.error(error.code === 'EADDRINUSE' ? `Port ${port} is busy. Set SUSPENSION_PORT to another port.` : error.message); process.exitCode = 1; });
-server.listen(port, '127.0.0.1', () => console.log(`Suspension Lab: http://127.0.0.1:${port}/\nKeep this terminal open. Press Ctrl+C to stop.`));
+server.listen(port, '127.0.0.1', () => {
+  const url = `http://127.0.0.1:${port}/`;
+  console.log(`Suspension Lab: ${url}\nKeep this terminal open. Press Ctrl+C to stop.`);
+  // Only the process that acquired the port may open its origin.
+  if (process.argv.includes('--open')) {
+    const command = process.platform === 'win32' ? 'rundll32.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', url] : [url];
+    const child = spawn(command, args, { stdio: 'ignore', windowsHide: true });
+    child.on('error', () => console.error(`Open ${url} manually.`));
+    child.unref();
+  }
+});

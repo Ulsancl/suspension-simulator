@@ -213,15 +213,27 @@ export class SuspensionSimulation {
     }
   }
 
-  step(dt) {
-    if (!Number.isFinite(dt) || dt <= 0) return this.snapshot();
+  integrationLimit() {
     const config = this.config;
     const damping = Math.max(config.compressionDamping, config.reboundDamping, this._curveModel?.damperMaxSlope || 0) * this._effectiveMotionRatio ** 2 + config.tireDamping + 2200;
     // Bound the explicit step additionally for extreme damping slider values.
     const stiffness = config.tireRate + Math.max(this._effectiveWheelRate, (this._curveModel?.springMaxSlope || 0) * this._effectiveMotionRatio ** 2);
-    const limit = Math.min(0.001, config.unsprungMass / (4 * Math.max(1, damping)), .25 * Math.sqrt(config.unsprungMass / stiffness));
-    let remaining = dt;
+    return Math.min(0.001, config.unsprungMass / (4 * Math.max(1, damping)), .25 * Math.sqrt(config.unsprungMass / stiffness));
+  }
+
+  assertWorkBudget(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0 || Math.ceil(seconds / this.integrationLimit()) > 100000) {
+      throw new Error('계산량 한도(100,000단계)를 초과합니다. 시험 시간을 줄이거나 부품 곡선의 강성·감쇠를 확인하세요.');
+    }
+  }
+
+  step(dt, { signal } = {}) {
+    if (!Number.isFinite(dt) || dt <= 0) return this.snapshot();
+    this.assertWorkBudget(dt);
+    const limit = this.integrationLimit();
+    let remaining = dt, steps = 0;
     while (remaining > 1e-12) {
+      if ((steps++ & 127) === 0 && signal?.aborted) { const error = new Error('실험을 취소했습니다.'); error.name = 'AbortError'; throw error; }
       const h = Math.min(limit, remaining);
       const s = this.state;
       const vector = [s.bodyY, s.bodyVelocity, s.wheelY, s.wheelVelocity];

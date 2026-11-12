@@ -2,10 +2,11 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell, scr
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { normalizeWindowState } = require('./window-state.cjs');
 
 const APP_URL = 'app://suspension/';
 const APP_NAME = 'Suspension Lab';
-const MAX_PROJECT_BYTES = 40 * 1024 * 1024;
+const { MAX_PROJECT_BYTES, checkProjectJSON } = require('./project-input.cjs');
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.txt': 'text/plain; charset=utf-8' };
 let mainWindow, calculationBusy = false, nativeBusy = 0, closePrompt = false;
 const downloads = new Set();
@@ -39,8 +40,9 @@ function safeFileName(value) {
 
 function projectText(contents) {
   if (typeof contents !== 'string' || Buffer.byteLength(contents, 'utf8') > MAX_PROJECT_BYTES) {
-    throw new Error('프로젝트 파일은 40 MiB 이하인 JSON 텍스트여야 합니다.');
+    throw new Error('프로젝트 파일은 32 MiB 이하인 JSON 텍스트여야 합니다.');
   }
+  checkProjectJSON(contents, message => { throw new Error(message); });
   let parsed;
   try { parsed = JSON.parse(contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents); }
   catch { throw new Error('JSON 프로젝트 파일을 읽을 수 없습니다. 원본 파일은 변경하지 않습니다.'); }
@@ -94,7 +96,7 @@ function registerFileActions() {
       const result = await dialog.showOpenDialog(mainWindow, { title: '서스펜션 프로젝트 열기', properties: ['openFile'], filters: [{ name: '서스펜션 프로젝트', extensions: ['json'] }] });
       if (result.canceled || !result.filePaths[0]) return { canceled: true };
       const target = result.filePaths[0], stat = await projectTarget(target);
-      if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 40 MiB 이하인 JSON 파일이어야 합니다.');
+      if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 32 MiB 이하인 JSON 파일이어야 합니다.');
       const handle = await fsp.open(target, 'r');
       let bytes;
       try {
@@ -104,7 +106,7 @@ function registerFileActions() {
         }
         bytes = await handle.readFile();
       } finally { await handle.close(); }
-      if (bytes.byteLength > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 40 MiB 이하여야 합니다.');
+      if (bytes.byteLength > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 32 MiB 이하여야 합니다.');
       return { canceled: false, content: projectText(bytes.toString('utf8')), path: target };
     } finally { nativeBusy--; }
   });
@@ -153,9 +155,9 @@ function createWindow() {
   const area = screen.getPrimaryDisplay().workArea;
   let saved = {};
   try { saved = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'window.json'), 'utf8')); } catch { /* First launch. */ }
+  const { maximized, ...bounds } = normalizeWindowState(saved, area);
   mainWindow = new BrowserWindow({
-    width: Math.min(Number(saved.width) || 1440, area.width), height: Math.min(Number(saved.height) || 1000, area.height),
-    minWidth: Math.min(960, area.width), minHeight: Math.min(640, area.height),
+    ...bounds,
     title: APP_NAME, show: false, backgroundColor: '#14191e', icon: path.join(__dirname, 'assets', 'app.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
   });
@@ -172,7 +174,7 @@ function createWindow() {
     dialog.showErrorBox(APP_NAME, '프로그램 파일을 읽지 못했습니다. 설치 파일로 다시 설치해 주세요.');
     app.quit();
   });
-  mainWindow.once('ready-to-show', () => { if (saved.maximized) mainWindow.maximize(); mainWindow.show(); });
+  mainWindow.once('ready-to-show', () => { if (maximized) mainWindow.maximize(); mainWindow.show(); });
   mainWindow.on('close', event => {
     if (calculationBusy || nativeBusy || downloads.size) {
       event.preventDefault();

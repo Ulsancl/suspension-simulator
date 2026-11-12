@@ -4,7 +4,7 @@ export default defineConfig({
   // Keep the independent simulator's HTML and dependency copies out of this app's optimizer.
   optimizeDeps: { entries: ['index.html'] },
   resolve: { dedupe: ['three'] },
-  server:{watch:{ignored:['**/output/**','**/release/**','**/dist/**','**/transmission-lab/**','**/.codex/**']}},
+  server:{watch:{ignored:['**/.security-stage-*', '**/.security-stage-*/**', '**/output/**','**/release/**','**/dist/**','**/transmission-lab/**','**/.codex/**']}},
   plugins: [{
     name: 'offline-asset-manifest',
     generateBundle(_options, bundle) {

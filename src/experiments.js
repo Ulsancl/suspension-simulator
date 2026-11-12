@@ -1,3 +1,4 @@
+import { checkProjectJSON } from './project-input.js';
 import { DEFAULT_CONFIG, normalizeConfig, SuspensionSimulation } from './physics.js';
 
 export const EXPERIMENT_SCHEMA_VERSION = 1;
@@ -81,8 +82,10 @@ function startExperiment(input, options) {
   const config = normalizeConfig(input);
   const id = options.id ?? createId();
   if (typeof id !== 'string' || !UUID.test(id)) invalid('기록 ID 형식이 올바르지 않습니다.');
+  const simulation = new SuspensionSimulation(config);
+  simulation.assertWorkBudget(duration);
   return {
-    simulation: new SuspensionSimulation(config), config, duration, id,
+    simulation, config, duration, id,
     createdAt: safeDate(options.createdAt ?? new Date().toISOString()),
     name: normalizeExperimentName(options.name),
   };
@@ -152,7 +155,7 @@ function finishExperiment(experiment) {
 export function runExperiment(config = {}, options = {}) {
   const experiment = startExperiment(config, options);
   while (experiment.duration - experiment.simulation.state.time > 1e-9) {
-    experiment.simulation.step(Math.min(CHUNK_SECONDS, experiment.duration - experiment.simulation.state.time));
+    experiment.simulation.step(Math.min(CHUNK_SECONDS, experiment.duration - experiment.simulation.state.time), { signal: options.signal });
   }
   return finishExperiment(experiment);
 }
@@ -166,7 +169,7 @@ export async function runExperimentAsync(config = {}, options = {}) {
   await scheduler();
   while (experiment.duration - experiment.simulation.state.time > 1e-9) {
     abortIfNeeded(options.signal);
-    experiment.simulation.step(Math.min(CHUNK_SECONDS, experiment.duration - experiment.simulation.state.time));
+    experiment.simulation.step(Math.min(CHUNK_SECONDS, experiment.duration - experiment.simulation.state.time), { signal: options.signal });
     options.onProgress?.({ progress: Math.min(1, experiment.simulation.state.time / experiment.duration), time: experiment.simulation.state.time, duration: experiment.duration });
     await scheduler();
   }
@@ -314,13 +317,16 @@ function validateHistoricalKPIs(input) {
 }
 
 function validateProject(input, maxRuns) {
+  if (typeof input === 'string') checkProjectJSON(input, message => { throw new ExperimentValidationError(message, 'resource-limit'); });
   const data = parseInput(input);
+  const allowed = new Set(['type', 'schemaVersion', 'modelVersion', 'name', 'exportedAt', 'config', 'runs', 'vehicleName']);
+  if (isObject(data) && Object.keys(data).some(key => !allowed.has(key))) invalid('프로젝트에 지원하지 않는 항목이 있습니다.');
   const historical = validateVersion(data, '프로젝트');
   if (data.type !== 'suspension-lab-project') invalid('지원하지 않는 프로젝트 파일입니다.');
   if (!Array.isArray(data.runs) || data.runs.length > maxRuns) invalid(`프로젝트 기록은 최대 ${maxRuns}개까지 가져올 수 있습니다.`);
   const runs = data.runs.map(validateExperiment);
   if (new Set(runs.map(run => run.id)).size !== runs.length) invalid('프로젝트에 중복 기록 ID가 있습니다.');
-  return { type: data.type, schemaVersion: EXPERIMENT_SCHEMA_VERSION, modelVersion: data.modelVersion, name: normalizeExperimentName(data.name, '서스펜션 프로젝트'), exportedAt: safeDate(data.exportedAt), config: validateStoredConfig(data.config, historical), runs };
+  return { type: data.type, schemaVersion: EXPERIMENT_SCHEMA_VERSION, modelVersion: data.modelVersion, name: normalizeExperimentName(data.name, '서스펜션 프로젝트'), vehicleName: normalizeExperimentName(data.vehicleName, ''), exportedAt: safeDate(data.exportedAt), config: validateStoredConfig(data.config, historical), runs };
 }
 
 function validateLibrary(input, maxRuns) {
@@ -632,6 +638,7 @@ export class ExperimentLibrary {
       let project;
       try { project = validateProject(input, this.maxRuns); }
       catch (error) {
+        if (error.reason === 'resource-limit') throw error;
         await this._captureRecovery(input, error.reason ?? 'corrupt-storage', 'project-import');
         if (!this._writeBlocked && (this._database || this._storage)) { try { await this._ensureRecoveries(); } catch {} }
         throw error;
@@ -641,7 +648,7 @@ export class ExperimentLibrary {
         this._activeKey = this._branchKey;
       }
       this._runs = project.runs;
-      return this._persist({ config: clone(project.config), name: project.name, count: project.runs.length });
+      return this._persist({ config: clone(project.config), name: project.name, vehicleName: project.vehicleName, count: project.runs.length });
     });
   }
 

@@ -6,3 +6,4 @@ output/
 progress.md
 *.log
 release/
+.security-stage-*

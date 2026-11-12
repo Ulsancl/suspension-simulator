@@ -76,6 +76,7 @@ export function runBenchmarkSuite() {
 function delimiterOf(text) {
   let quoted = false, comma = 0, semicolon = 0;
   for (let i = 0; i < text.length; i++) {
+    if (i > 10240 || comma > 39 || semicolon > 39) invalid('CSV 헤더는 최대 40열, 10 KiB까지 지원합니다.');
     const character = text[i];
     if (character === '"') {
       if (quoted && text[i + 1] === '"') i++;
@@ -94,14 +95,20 @@ function delimiterOf(text) {
 function csvRows(text, delimiter) {
   const rows = [];
   let row = [], cell = '', quoted = false, closedQuote = false;
-  const finishCell = () => { row.push(cell.trim()); cell = ''; closedQuote = false; };
+  let width = 40, cells = 0, recordLength = 0;
+  const finishCell = () => {
+    if (row.length >= width || ++cells > 1000000) invalid('CSV 열 개수 또는 전체 셀 수가 허용 범위를 초과합니다.');
+    row.push(cell.trim()); cell = ''; closedQuote = false;
+  };
   const finishRow = () => {
     finishCell();
-    if (row.some(value => value !== '')) rows.push(row);
+    if (row.some(value => value !== '')) { if (!rows.length) width = row.length; rows.push(row); }
+    recordLength = 0;
     row = [];
     if (rows.length > MAX_MEASUREMENT_SAMPLES + 1) invalid('실측 데이터는 최대 100,000개 샘플까지 지원합니다.');
   };
   for (let i = 0; i < text.length; i++) {
+    if (cell.length > 256 || ++recordLength > 10240) invalid('CSV 셀 또는 행의 길이가 허용 범위를 초과합니다.');
     const character = text[i];
     if (quoted) {
       if (character === '"') {
