@@ -136,7 +136,7 @@ function download(text, filename, type) {
 function capture(name) {
   const c = { ...sim.config, singleEvent: false }, trial = new SuspensionSimulation(c);
   // Each capture repeats the same six simulation seconds, from static equilibrium.
-  trial.advance(6);
+  try { trial.advance(6); } catch (error) { message(error.message); return; }
   comparisons[name] = { config: c, metrics: trial.metrics() };
   $(`#save-${name.toLowerCase()}-btn`).classList.add('saved');
   $(`#save-${name.toLowerCase()}-btn`).textContent = `${name} 저장됨 ✓`;

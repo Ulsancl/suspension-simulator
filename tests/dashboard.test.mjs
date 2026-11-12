@@ -1,10 +1,11 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { chromium } from 'playwright';
 
 const url=process.env.SUSPENSION_TEST_URL||'http://127.0.0.1:5173';
 const version=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
-const output=`output/dashboard-v${version}`;fs.mkdirSync(output,{recursive:true});
+const output = artifactDirectory(process.cwd(), `output/dashboard-v${version}`);fs.mkdirSync(output,{recursive:true});
 const browser=await chromium.launch({headless:true});
 const errors=[],checks=[],evidence={};
 const context=await browser.newContext({viewport:{width:1440,height:1000}});

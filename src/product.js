@@ -1,3 +1,4 @@
+import { MAX_PROJECT_BYTES } from './project-input.js';
 import { DEFAULT_CONFIG } from './physics.js';
 import { ExperimentLibrary, runExperimentAsync, runDampingSweep, isLegacyExperiment } from './experiments.js';
 import { getDesktop } from './desktop.js';
@@ -213,7 +214,7 @@ export function initProduct({getConfig,setConfig,setRunning,getScene,notify}) {
   async function importProject(file,fromDesktopDialog=false){
     if(isBusy()||(fileOperation&&!fromDesktopDialog))return;
     setMutationBusy(true);
-    try{if(file.size>40*1024*1024)throw new Error('프로젝트 파일은 40MB 이하여야 합니다.');const raw=await file.text();const result=await library.importProject(raw);const data=JSON.parse(raw);persistence(result);setRunning(false);setConfig(result.config||data.config);if($('#vehicle-name')){$('#vehicle-name').value=typeof data.vehicleName==='string'?data.vehicleName.slice(0,80):'';$('#vehicle-name').dispatchEvent(new Event('input'));}projectName=cleanName(data.name||data.project?.name||'가져온 프로젝트');if(projectInput)projectInput.value=projectName;storeName();selected=library.list().slice(0,3).map(run=>run.id);lastSweep=null;renderRecords();renderSweep();if(result.persisted)notify('프로젝트의 설정과 기록을 복원했습니다.');}
+    try{if(file.size>MAX_PROJECT_BYTES)throw new Error('프로젝트 파일은 32 MiB 이하여야 합니다.');const raw=await file.text();const result=await library.importProject(raw);persistence(result);setRunning(false);setConfig(result.config);if($('#vehicle-name')){$('#vehicle-name').value=result.vehicleName||'';$('#vehicle-name').dispatchEvent(new Event('input'));}projectName=cleanName(result.name||'가져온 프로젝트');if(projectInput)projectInput.value=projectName;storeName();selected=library.list().slice(0,3).map(run=>run.id);lastSweep=null;renderRecords();renderSweep();if(result.persisted)notify('프로젝트의 설정과 기록을 복원했습니다.');}
     catch(error){renderRecoveries();notify(`프로젝트 열기 실패: ${error.message}`,true);}
     finally{setMutationBusy(false);}
   }

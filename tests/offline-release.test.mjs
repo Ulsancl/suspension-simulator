@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import http from 'node:http';
 const url=process.env.SUSPENSION_TEST_URL || 'http://127.0.0.1:5175';
 const suffix=process.env.SUSPENSION_TEST_OUTPUT_SUFFIX||'';
 if(suffix&&!/^[a-z0-9-]+$/.test(suffix))throw new Error('Invalid test output suffix');
-const output='output/offline-release'+(suffix?'-'+suffix:'');
+const output = artifactDirectory(process.cwd(), 'output/offline-release'+(suffix?'-'+suffix:''));
 const results=[];
 const browser=await chromium.launch({ headless:true });
 const context=await browser.newContext({ viewport:{width:1440,height:1000} });
@@ -33,6 +34,9 @@ try {
   for(const asset of ['/', '/manifest.webmanifest','/app-icon-192.png','/app-icon-512.png',...assets])assert.ok(cached.includes(asset),asset+' must be precached');
   results.push('서비스 워커 활성화 · 전체 정적 에셋 사전 캐시');
 
+  const nonShell = await context.newPage();
+  await nonShell.goto(url + '/manifest.webmanifest');
+  await nonShell.close();
   await context.setOffline(true);
   await page.reload({waitUntil:'networkidle'});
   await page.waitForFunction(()=>window.suspensionLab);

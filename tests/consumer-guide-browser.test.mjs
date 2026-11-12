@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import { getConsumerGuide, describeGuideResults } from '../src/consumer-guide.js
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const version=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8')).version;
-const output=path.join(root,'output','playwright',`consumer-guide-v${version}`);
+const output = artifactDirectory(root, path.join(root,'output','playwright',`consumer-guide-v${version}`));
 const baseURL=process.env.SUSPENSION_TEST_URL||'http://127.0.0.1:5173';
 await fs.mkdir(output,{recursive:true});
 const browser=await chromium.launch({headless:true});

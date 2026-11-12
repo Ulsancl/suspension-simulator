@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -10,7 +11,7 @@ import { _electron as electron } from 'playwright';
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedVersion=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8')).version;
-const output = path.join(root, 'output', `${process.env.SUSPENSION_DESKTOP_EXE?'desktop-packaged':'desktop'}-v${expectedVersion}`);
+const output = artifactDirectory(root, path.join(root, 'output', `${process.env.SUSPENSION_DESKTOP_EXE?'desktop-packaged':'desktop'}-v${expectedVersion}`));
 await fs.mkdir(output, { recursive: true });
 const profile = await fs.mkdtemp(path.join(output, 'profile-'));
 const executablePath = process.env.SUSPENSION_DESKTOP_EXE || require('electron');
@@ -343,6 +344,7 @@ async function runChecks() {
     await assert.rejects(page.evaluate(contents => window.suspensionDesktop.saveProject({ contents, name: 'project.json' }), original), /연결된 폴더/);
     await assert.rejects(page.evaluate(() => window.suspensionDesktop.saveProject({ contents: '{broken', name: 'project.json' })), /JSON 프로젝트/);
     assert.equal(await fs.readFile(realProject, 'utf8'), original);
+    await fs.unlink(linkedDirectory);
     assert.deepEqual(await config(), savedConfig); assert.deepEqual(await records(), savedRuns);
   });
   await check('native export creates CSV, report, PNG and GLB files', async () => {

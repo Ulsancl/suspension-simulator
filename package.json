@@ -12,7 +12,7 @@
     "prebuild": "node scripts/clean-dist.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test tests/physics.test.mjs tests/component-curves.test.mjs tests/experiments.test.mjs tests/engineering.test.mjs tests/experiment-batch.test.mjs tests/consumer-guide.test.mjs tests/playback-clock.test.mjs tests/detail-model.test.mjs tests/scene-detail.test.mjs tests/window-state.test.mjs",
+    "test": "node --test tests/physics.test.mjs tests/component-curves.test.mjs tests/experiments.test.mjs tests/engineering.test.mjs tests/experiment-batch.test.mjs tests/consumer-guide.test.mjs tests/playback-clock.test.mjs tests/detail-model.test.mjs tests/scene-detail.test.mjs tests/window-state.test.mjs tests/safe-files.test.mjs tests/security-inputs.test.mjs tests/service-worker.test.mjs tests/launcher.test.mjs",
     "test:guide": "node tests/consumer-guide-browser.test.mjs",
     "test:storage": "node tests/experiment-migration-browser.test.mjs",
     "test:browser": "node tests/browser.test.mjs",

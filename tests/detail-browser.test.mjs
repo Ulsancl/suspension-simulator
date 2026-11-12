@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -6,7 +7,8 @@ import { createServer } from 'vite';
 import { DEFAULT_CONFIG } from '../src/physics.js';
 import { COMPONENT_PROFILE_TEMPLATE } from '../src/component-curves.js';
 
-const root = path.resolve(import.meta.dirname, '..'), output = path.join(root, 'output', 'detail-browser');
+const root = path.resolve(import.meta.dirname, '..');
+const output = artifactDirectory(root, path.join(root, 'output', 'detail-browser'));
 const address = process.env.SUSPENSION_TEST_URL || 'http://127.0.0.1:5257';
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 const checks = [], errors = [], externalRequests = [], evidence = [];
