@@ -210,10 +210,13 @@ export function compareMeasurement(input, measurementInput, options = {}) {
   const residuals = [];
   for (const sample of measurement.samples) {
     const time = sample.time + timeOffset;
-    if (time < first || time > last) continue;
-    while (cursor < history.length - 2 && history[cursor + 1].time < time) cursor++;
+    // Previously saved runs can end a few ulps short of their nominal duration.
+    const nominalEnd = time === run.duration && Math.abs(time - last) < 1e-9;
+    if (time < first || (time > last && !nominalEnd)) continue;
+    const lookupTime = nominalEnd ? last : time;
+    while (cursor < history.length - 2 && history[cursor + 1].time < lookupTime) cursor++;
     const a = history[cursor], b = history[cursor + 1];
-    const fraction = (time - a.time) / (b.time - a.time);
+    const fraction = (lookupTime - a.time) / (b.time - a.time);
     const simulated = a[channel] + fraction * (b[channel] - a[channel]);
     const residual = simulated - sample.value;
     residuals.push({ time, measuredTime: sample.time, measured: sample.value, simulated, residual });

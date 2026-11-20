@@ -95,6 +95,31 @@ test('linear interpolation and explicit time offset reproduce an independent lin
   assert.equal(comparison.sampleCount, 4);
 });
 
+test('recorded experiments retain both requested endpoints for measurement comparisons', () => {
+  for (const duration of [1, 2.003, 30]) {
+    const run = runExperiment({ road: 'flat' }, { duration });
+    assert.equal(run.history[0].time, 0);
+    assert.equal(run.history.at(-1).time, duration);
+    assert.equal(run.history.filter(sample => sample.time === duration).length, 1);
+    if (duration === 30) assert.equal(run.history.length, 3601);
+    const measured = parseMeasurementCSV(`time,travel\n-0.01,1\n0,0\n${duration},0\n${duration + 0.01},1`, { channel: 'travel' });
+    const result = compareMeasurement(run, measured);
+    assert.equal(result.sampleCount, 2);
+    assert.deepEqual(result.window, { start: 0, end: duration, duration });
+    near(result.rmse, 0);
+  }
+});
+
+test('earlier saved runs accept their nominal endpoint without extrapolating', () => {
+  const run = linearRun();
+  run.history.at(-1).time = run.duration - 1e-13;
+  const data = parseMeasurementCSV('time,travel\n0,0.01\n2,4.01\n2.00001,10', { channel: 'travel' });
+  const result = compareMeasurement(run, data);
+  assert.equal(result.sampleCount, 2);
+  assert.equal(result.window.end, run.duration);
+  assert.equal(result.residuals.at(-1).simulated, run.history.at(-1).travel);
+});
+
 test('known constant residual yields expected RMSE/MAE/peak error without fitting', () => {
   const run = linearRun();
   const data = parseMeasurementCSV('time,travel\n0,-0.49\n0.5,0.51\n1,1.51\n1.5,2.51', { channel: 'travel' });
