@@ -85,7 +85,7 @@ function startExperiment(input, options) {
   const simulation = new SuspensionSimulation(config);
   simulation.assertWorkBudget(duration);
   return {
-    simulation, config, duration, id,
+    simulation, config, duration, id, initialState: simulation.snapshot(),
     createdAt: safeDate(options.createdAt ?? new Date().toISOString()),
     name: normalizeExperimentName(options.name),
   };
@@ -139,8 +139,13 @@ function calculateKPIs(config, duration, history, metrics) {
 function finishExperiment(experiment) {
   const { simulation, config, duration, id, createdAt, name } = experiment;
   const history = simulation.history.map(sample => ({ springCurveOutOfRange: false, damperCurveOutOfRange: false, ...sample }));
-  const finalState = { springCurveOutOfRange: false, damperCurveOutOfRange: false, ...simulation.snapshot() };
-  if (!history.length || Math.abs(history.at(-1).time - finalState.time) > 1e-7) history.push(finalState);
+  // The live plot is a rolling window; a 30 s recording also needs the t=0 sample.
+  if (history[0].time !== 0) history.unshift(experiment.initialState);
+  // The solver reaches the requested duration to round-off. Store the nominal
+  // endpoint so an external measurement stamped at that time is inside the run.
+  const finalState = { ...simulation.snapshot(), time: duration };
+  if (Math.abs(history.at(-1).time - duration) > 1e-7) history.push(finalState);
+  else history[history.length - 1] = finalState;
   const metrics = { curveExtrapolationPct: 0, ...simulation.metrics() };
   return {
     type: 'suspension-lab-experiment', schemaVersion: EXPERIMENT_SCHEMA_VERSION,
