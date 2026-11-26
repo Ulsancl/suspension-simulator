@@ -36,7 +36,7 @@
 
 ## 설치와 실행
 
-[1.4.0 릴리스](https://github.com/Ulsancl/suspension-simulator/releases/tag/v1.4.0)에서 `Suspension-Lab-Setup-1.4.0.exe`와 동명 `.sha256` 파일을 받습니다. 소스에서 패키징하면 `release/windows/`에 생성됩니다.
+[1.4.1 릴리스](https://github.com/Ulsancl/suspension-simulator/releases/tag/v1.4.1)에서 `Suspension-Lab-Setup-1.4.1.exe`와 동명 `.sha256` 파일을 받습니다. 소스에서 패키징하면 `release/windows/`에 생성됩니다.
 
 설치 파일을 실행한 뒤 바탕화면 또는 시작 메뉴의 **Suspension Lab** 아이콘을 클릭합니다. Windows **x64**, WebGL 2 그래픽 환경을 대상으로 합니다. 실행 환경을 포함하므로 설치한 앱은 첫 실행부터 인터넷·Node.js·별도 서버 없이 사용할 수 있습니다. 디지털 서명과 자동 업데이트는 없으며 새 설치 파일로 갱신합니다.
 

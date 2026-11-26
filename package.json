@@ -1,6 +1,6 @@
 {
   "name": "suspension-lab",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "type": "module",
   "description": "단일 휠 서스펜션의 수직 응답을 비교하는 3D 실험 프로그램",
