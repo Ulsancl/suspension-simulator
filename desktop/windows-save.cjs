@@ -11,6 +11,7 @@ $expectedExisting = [bool]$inputRecord.expectedExisting
 $parent = [IO.Path]::GetDirectoryName($target)
 $stage = [IO.Path]::Combine($parent, '.suspension-save-' + [Guid]::NewGuid().ToString('N'))
 $temporary = [IO.Path]::Combine($stage, 'project.tmp')
+$backup = [IO.Path]::Combine($stage, 'original-project.json')
 $reparsePoint = [IO.FileAttributes]::ReparsePoint
 function Assert-RealDirectory([string]$directory) {
     while ($directory) {
@@ -19,6 +20,7 @@ function Assert-RealDirectory([string]$directory) {
     }
 }
 $owned = $false
+$published = $false
 try {
     Assert-RealDirectory $parent
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -55,9 +57,18 @@ try {
         if (($null -ne $attributes) -ne $expectedExisting) { throw 'Save destination changed' }
         try {
             if ($null -eq $attributes) { [IO.File]::Move($temporary, $target) }
-            else { [IO.File]::Replace($temporary, $target, [NullString]::Value, $false) }
+            else { [IO.File]::Replace($temporary, $target, $backup, $false) }
+            $published = $true
             break
         } catch {
+            # Some ReplaceFileW failures can leave the original at the backup
+            # path. Restore its name when possible, otherwise keep it private.
+            if ([IO.File]::Exists($backup)) {
+                if (![IO.File]::Exists($target) -and ![IO.Directory]::Exists($target)) {
+                    try { [IO.File]::Move($backup, $target) } catch {}
+                }
+                throw
+            }
             $code = $_.Exception.GetBaseException().HResult -band 65535
             if ($attempt -ge $delays.Length -or $code -notin @(5, 32, 33)) { throw }
             Start-Sleep -Milliseconds $delays[$attempt]
@@ -67,7 +78,9 @@ try {
     if ($owned) {
         Assert-RealDirectory $stage
         [IO.File]::Delete($temporary)
-        [IO.Directory]::Delete($stage)
+        if ($published) { [IO.File]::Delete($backup) }
+        if ([IO.File]::Exists($backup)) { [Console]::Out.WriteLine([IO.Path]::GetFileName($stage)) }
+        else { [IO.Directory]::Delete($stage) }
     }
 }
 `;
@@ -95,13 +108,23 @@ function windowsWriteProject(target, contents, expectedExisting) {
   return new Promise((resolve, reject) => {
     const executable = windowsPowerShell();
     const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', command], {
-      cwd: path.dirname(executable), windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'], env: windowsPowerShellEnv(),
+      cwd: path.dirname(executable), windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'], env: windowsPowerShellEnv(),
     });
+    let output = '';
+    child.stdout.setEncoding('ascii');
+    child.stdout.on('data', chunk => { output = (output + chunk).slice(-128); });
     child.on('error', reject);
     child.stdin.on('error', reject);
     child.on('close', code => {
       if (code === 0) resolve();
-      else reject(new Error('프로젝트를 저장하지 못했습니다. 대상 경로와 파일 권한을 확인해 주세요.'));
+      else {
+        const stage = output.trim();
+        const backup = /^\.suspension-save-[a-f0-9]{32}$/.test(stage)
+          ? path.join(path.dirname(target), stage, 'original-project.json') : null;
+        reject(new Error(backup
+          ? '프로젝트를 저장하지 못했습니다. 원래 파일은 다음 경로에 보관했습니다. ' + backup
+          : '프로젝트를 저장하지 못했습니다. 대상 경로와 파일 권한을 확인해 주세요.'));
+      }
     });
     child.stdin.end(payload);
   });
