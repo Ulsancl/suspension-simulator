@@ -1,16 +1,19 @@
+import { signedValue, staticContactLoad } from './condition-readouts.js';
+
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const format = (value, digits = 2) => Number.isFinite(value) ? (Math.abs(value) < .5 * 10 ** -digits ? 0 : value).toFixed(digits) : '—';
 const SERIES = {
   bodyY: { label: '차체', unit: 'mm', scale: 1000, color: '#54dfc5' },
   wheelY: { label: '휠', unit: 'mm', scale: 1000, color: '#79baff' },
-  rawRoadY: { label: '노면', unit: 'mm', scale: 1000, color: '#f3b277', dashed: true },
+  rawRoadY: { label: '노면', unit: 'mm', scale: 1000, color: '#f3b277', dash: '7 5' },
+  travel: { label: '상대 이동', unit: 'mm', scale: 1000, color: '#d6b3ff', dash: '3 3' },
   contactForce: { label: '접지력', unit: 'kN', scale: .001, color: '#54dfc5' },
   springForce: { label: '스프링 힘', unit: 'kN', scale: .001, color: '#f3b277' },
   bodyAcceleration: { label: '차체', unit: 'm/s²', scale: 1, color: '#54dfc5' },
   wheelAcceleration: { label: '휠', unit: 'm/s²', scale: 1, color: '#79baff' },
 };
 const DEFINITIONS = [
-  { id: 'motion-chart', key: 'motion', unit: 'mm', keys: ['bodyY', 'wheelY', 'rawRoadY'], minimum: 5, positive: false },
+  { id: 'motion-chart', key: 'motion', unit: 'mm', keys: ['bodyY', 'wheelY', 'rawRoadY', 'travel'], minimum: 5, positive: false },
   { id: 'force-chart', key: 'force', unit: 'kN', keys: ['contactForce', 'springForce'], minimum: .5, positive: true },
   { id: 'acceleration-chart', key: 'acceleration', unit: 'm/s²', keys: ['bodyAcceleration', 'wheelAcceleration'], minimum: .5, positive: false },
 ];
@@ -32,15 +35,42 @@ function stats(rows, key, scale = 1) {
   return { min, max, peak: Math.max(Math.abs(min), Math.abs(max)), rms: Math.sqrt(sum / rows.length) };
 }
 
+function matchingSpans(rows, matches) {
+  const spans = [];
+  let start = null;
+  for (let i = 0; i <= rows.length; i++) {
+    if (i < rows.length && matches(rows[i])) {
+      if (start === null) start = rows[i].time;
+    } else if (start !== null) {
+      spans.push([start, rows[i - 1].time]);
+      start = null;
+    }
+  }
+  return spans;
+}
+
 export class AnalysisCharts {
   constructor() {
     this.windowSeconds = 8; this.follow = true; this.end = 8; this.cursorTime = null;
     this.visibleSeries = new Set(Object.keys(SERIES)); this.history = []; this.state = { time: 0 }; this.config = {};
     this.activeChart = 'motion'; this.lastPaint = 0; this.drag = null; this.frames = new Map();
     this.definitions = DEFINITIONS.filter(item => document.getElementById(item.id));
+    this.conditionKeys = new Map();
     this.resizeObserver = new ResizeObserver(() => this.paint());
     for (const definition of this.definitions) {
       const svg = document.getElementById(definition.id);
+      const panel = svg.closest('.chart-panel');
+      if (definition.key === 'motion') {
+        panel.querySelector('.chart-legend').insertAdjacentHTML('beforeend', '<button type="button" data-series="travel" aria-pressed="true"><i class="dot condition-travel-dot" aria-hidden="true"></i>상대 이동</button>');
+        svg.setAttribute('aria-label', `${svg.getAttribute('aria-label')} 상대 이동의 양수는 압축, 음수는 신장입니다. 점선은 표시 범위 안의 한계입니다.`);
+      }
+      if (definition.key === 'force') svg.setAttribute('aria-label', `${svg.getAttribute('aria-label')} 접지력은 휠에 위로 작용합니다. 짙은 음영은 접지 이탈 샘플입니다.`);
+      if (definition.key !== 'acceleration') {
+        const key = document.createElement('div');
+        key.className = 'chart-condition-key';
+        svg.parentElement.after(key);
+        this.conditionKeys.set(definition.key, key);
+      }
       svg.style.touchAction = 'pan-y'; svg.style.cursor = 'crosshair';
       this.resizeObserver.observe(svg);
       svg.addEventListener('pointermove', event => this.pointerMove(event, definition));
@@ -138,8 +168,23 @@ export class AnalysisCharts {
     const L = W < 500 ? 56 : 70, R = W < 500 ? 14 : 25, T = 25, B = 42, pw = W - L - R, ph = H - T - B;
     this.frames.set(definition.key, { left: L, plotWidth: pw }); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     const active = definition.keys.filter(key => this.visibleSeries.has(key));
+    const stops = active.includes('travel') && Number.isFinite(this.config.travelBump)
+      ? [-this.config.travelRebound * 1000, this.config.travelBump * 1000] : [];
+    const staticLoad = active.includes('contactForce') && Number.isFinite(this.config.sprungMass)
+      ? staticContactLoad(this.config) * SERIES.contactForce.scale : 0;
+    const conditionKey = this.conditionKeys.get(definition.key);
+    if (conditionKey) {
+      conditionKey.hidden = !stops.length && !staticLoad;
+      const label = stops.length
+        ? `신장 ${signedValue(stops[0], 1)} · 압축 ${signedValue(stops[1], 1)} mm`
+        : `점선은 정적 하중 ${format(staticLoad)} kN`;
+      const note = stops.length ? '긴 점선은 표시 범위 안의 한계' : '짙은 음영은 접지 이탈';
+      const caption = `${label} · ${note}`;
+      if (conditionKey.textContent !== caption) conditionKey.textContent = caption;
+    }
     let low = 0, high = definition.minimum;
     for (const key of active) { const s = stats(rows, key, SERIES[key].scale); low = Math.min(low, s.min); high = Math.max(high, s.max); }
+    high = Math.max(high, staticLoad);
     const gap = Math.max(high - low, definition.minimum);
     if (!definition.positive) low -= gap * .10;
     high += gap * .12;
@@ -150,11 +195,13 @@ export class AnalysisCharts {
     let html = `<defs><clipPath id="${clip}"><rect x="${L}" y="${T}" width="${pw}" height="${ph}"/></clipPath></defs>`;
     html += `<rect x="${L}" y="${T}" width="${pw}" height="${ph}" rx="4" fill="#101923" fill-opacity=".65"/>`;
     // Subtle bands associate the physical response with obstacle passage.
-    let bandStart = null;
-    for (let i = 0; i <= rows.length; i++) {
-      const hit = i < rows.length && Math.abs(rows[i].rawRoadY || 0) > .0005;
-      if (hit && bandStart === null) bandStart = rows[i].time;
-      if (!hit && bandStart !== null) { const finish = rows[Math.max(i - 1, 0)].time; html += `<rect x="${x(bandStart).toFixed(2)}" y="${T}" width="${Math.max(1, x(finish) - x(bandStart)).toFixed(2)}" height="${ph}" fill="#f3b277" fill-opacity=".055" clip-path="url(#${clip})"/>`; bandStart = null; }
+    for (const [start, end] of matchingSpans(rows, row => Math.abs(row.rawRoadY || 0) > .0005)) {
+      html += `<rect x="${x(start).toFixed(2)}" y="${T}" width="${Math.max(1, x(end) - x(start)).toFixed(2)}" height="${ph}" fill="#f3b277" fill-opacity=".055" clip-path="url(#${clip})"/>`;
+    }
+    if (staticLoad) {
+      for (const [start, end] of matchingSpans(rows, row => !row.contact)) {
+        html += `<rect data-contact-loss x="${x(start).toFixed(2)}" y="${T}" width="${Math.max(1, x(end) - x(start)).toFixed(2)}" height="${ph}" fill="#f3b277" fill-opacity=".24" clip-path="url(#${clip})"/>`;
+      }
     }
     let decimals = 0;
     while (decimals < 4 && Math.abs(step * 10 ** decimals - Math.round(step * 10 ** decimals)) > 1e-7) decimals++;
@@ -165,6 +212,15 @@ export class AnalysisCharts {
     for (let i = 0; i <= ticks; i++) {
       const time = view.start + this.windowSeconds * i / ticks, xx = x(time);
       html += `<line x1="${xx}" y1="${T}" x2="${xx}" y2="${T + ph}" stroke="#334456" stroke-opacity=".35" stroke-dasharray="3 5"/><text class="axis-tick" x="${xx}" y="${H - 17}" text-anchor="middle" fill="#a1b0c1" font-size="12">${format(time, this.windowSeconds < 4 ? 2 : 1)}</text>`;
+    }
+    for (const [index, limit] of stops.entries()) {
+      if (limit < ymin || limit > ymax) continue;
+      const yy = y(limit);
+      html += `<line data-stroke-limit="${index ? 'compression' : 'extension'}" x1="${L}" y1="${yy}" x2="${W - R}" y2="${yy}" stroke="#d6b3ff" stroke-opacity=".8" stroke-dasharray="7 4"/>`;
+    }
+    if (staticLoad) {
+      const yy = y(staticLoad);
+      html += `<line data-static-load x1="${L}" y1="${yy}" x2="${W - R}" y2="${yy}" stroke="#cddfea" stroke-opacity=".65" stroke-dasharray="7 4"/>`;
     }
     html += `<text class="axis-unit" x="${L}" y="15" fill="#acbbcb" font-size="12">${definition.unit}</text><text class="axis-unit" x="${W - R}" y="${H - 3}" text-anchor="end" fill="#8da0b4" font-size="12">시뮬레이션 시간 (s)</text>`;
     const decimation = Math.max(1, Math.floor(rows.length / Math.max(200, pw * 2)));
@@ -178,7 +234,7 @@ export class AnalysisCharts {
         selected.push(...[...new Set(extrema)].sort((a, b) => a.time - b.time));
       }
       const path = selected.map((row, i) => `${i ? 'L' : 'M'}${x(row.time).toFixed(2)},${y((row[key] || 0) * series.scale).toFixed(2)}`).join('');
-      html += `<path data-series="${key}" d="${path}" fill="none" stroke="${series.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" ${series.dashed ? 'stroke-dasharray="7 5"' : ''} clip-path="url(#${clip})"/>`;
+      html += `<path data-series="${key}" d="${path}" fill="none" stroke="${series.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" ${series.dash ? `stroke-dasharray="${series.dash}"` : ''} clip-path="url(#${clip})"/>`;
     }
     if (this.cursorTime !== null && this.cursorTime >= view.start && this.cursorTime <= view.end) {
       const sample = nearest(this.history, this.cursorTime), xx = x(sample.time);
@@ -199,7 +255,10 @@ export class AnalysisCharts {
     const sample = nearest(this.history, this.cursorTime); if (!sample) return;
     const definition = this.definitions.find(item => item.key === this.activeChart);
     const keys = definition.keys.filter(key => this.visibleSeries.has(key));
-    output.textContent = `t ${format(sample.time, 3)} s  ·  ${keys.map(key => `${SERIES[key].label} ${format(sample[key] * SERIES[key].scale, 2)} ${SERIES[key].unit}`).join('  ·  ')}`;
+    const readout = keys.map(key => `${SERIES[key].label} ${format(sample[key] * SERIES[key].scale, 2)} ${SERIES[key].unit}`);
+    if (keys.includes('travel') && (sample.bottomed || sample.toppedOut)) readout.push(sample.bottomed ? '압축 한계 초과' : '신장 한계 초과');
+    if (keys.includes('contactForce')) readout.push(sample.contact ? '접지 중' : '접지 이탈');
+    output.textContent = [`t ${format(sample.time, 3)} s`, ...readout].join('  ·  ');
     output.dataset.value = JSON.stringify(sample);
   }
   paintSummaries(rows) {

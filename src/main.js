@@ -1,5 +1,5 @@
 import './style.css';
-import { SuspensionSimulation, DEFAULT_CONFIG, normalizeConfig } from './physics.js';
+import { SuspensionSimulation, DEFAULT_CONFIG, normalizeConfig, roadEventEndDistance } from './physics.js';
 import { SuspensionScene } from './scene.js';
 import { AnalysisCharts } from './charts.js';
 import { initProduct } from './product.js';
@@ -22,7 +22,7 @@ const sim = new SuspensionSimulation(config);
 const workspace = initWorkspace();
 const charts = new AnalysisCharts();
 const dashboard = initDashboard({getView:workspace.getView,getChartState:()=>charts.getState(),repaint:()=>charts.paint()});
-let running = false, singleRun = false, scene, last = performance.now(), uiElapsed = 0;
+let running = false, singleStopDistance = null, scene, last = performance.now(), uiElapsed = 0;
 let comparisons = { A: null, B: null };
 let appliedSceneOptions = '';
 let product, engineering;
@@ -51,6 +51,7 @@ function outputValue(key, value) {
   if (key === 'airPressure') return `${number(value, 1)} bar`;
   if (key === 'airVolume') return `${number(value, 1)} L`;
   if (key === 'motionRatio') return number(value, 2);
+  if (key === 'roadRepeatCount') return value === 0 ? '계속 반복' : `${value}회`;
   return `${number(value, 1)} m`;
 }
 function syncControls() {
@@ -72,6 +73,22 @@ function syncControls() {
   $('#time-scale').value = String(c.timeScale);
   $('#air-controls').hidden = c.springType !== 'air';
   for (const card of $$('[data-road]')) { const active = card.dataset.road === c.road; card.classList.toggle('active', active); card.setAttribute('aria-pressed', String(active)); }
+  const washboard = c.road === 'washboard';
+  $('#road-width-label').textContent = washboard ? '요철 파장' : '요철 폭';
+  $('#road-spacing-label').textContent = washboard ? '시작 위치 기준 간격' : '요철 간격';
+  $('#road-repeat-label').textContent = washboard ? '연속 요철 파형 수' : '요철 반복 횟수';
+  $('#road-spacing-note').hidden = !washboard;
+  if (washboard) $('#road-spacing').setAttribute('aria-describedby', 'road-spacing-note');
+  else $('#road-spacing').removeAttribute('aria-describedby');
+  $('#road-sequence-controls').hidden = c.road === 'flat';
+  for (const key of ['roadLeadIn', 'roadRepeatCount']) {
+    const input = $(`[data-config="${key}"]`);
+    input.setAttribute('aria-valuetext', outputValue(key, c[key]));
+  }
+  $('#road-repeat-note').textContent = c.singleEvent
+    ? `현재 입력은 ${washboard ? '3개 파형' : '요철 1회'}입니다. 횟수를 조절하면 선택한 횟수로 전환됩니다.`
+    : '0은 계속 반복합니다. 횟수를 지정하면 마지막 요철 뒤는 평탄합니다.';
+  $('#single-event-label').textContent = washboard ? '요철 3파형' : '요철 1회';
   $('#structure-label').textContent = names[c.structure];
   const descriptions = {
     wishbone: '상·하 삼각형 암 · 이중 피벗 · 볼 조인트',
@@ -90,12 +107,22 @@ function syncControls() {
 function setConfig(patch) {
   try { const candidate = normalizeConfig({ ...sim.config, ...patch }); new SuspensionSimulation(candidate); config = candidate; }
   catch (error) { message(`설정 적용 실패: ${error.message}`, true); syncControls(); return { ...sim.config }; }
-  sim.reset(config); singleRun = false;
+  if (singleStopDistance !== null) setRunning(false);
+  singleStopDistance = null;
+  sim.reset(config);
   scene?.buildRig(sim.config); syncControls();
   try { localStorage.setItem('suspension-lab-config', JSON.stringify(sim.config)); } catch { /* Local saving is optional. */ }
   update(); product?.configurationChanged(); return { ...sim.config };
 }
-function reset() { sim.reset(sim.config); singleRun = false; setRunning(false); update(); }
+function reset() {
+  if (singleStopDistance !== null) {
+    setConfig({ singleEvent: false });
+    return;
+  }
+  sim.reset(sim.config);
+  setRunning(false);
+  update();
+}
 function options() {
   const next = { links: $('#show-links').checked, forces: $('#show-forces').checked, labels: $('#show-labels').checked };
   const signature = JSON.stringify(next);
@@ -134,7 +161,7 @@ function download(text, filename, type) {
   const url = URL.createObjectURL(new Blob([text], { type })); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function capture(name) {
-  const c = { ...sim.config, singleEvent: false }, trial = new SuspensionSimulation(c);
+  const c = { ...sim.config }, trial = new SuspensionSimulation(c);
   // Each capture repeats the same six simulation seconds, from static equilibrium.
   try { trial.advance(6); } catch (error) { message(error.message); return; }
   comparisons[name] = { config: c, metrics: trial.metrics() };
@@ -144,7 +171,7 @@ function capture(name) {
   const describe = (entry) => `${names[entry.config.structure]} · ${entry.config.springType} · ${number(entry.metrics.peakTravel * 1000, 1)} mm · 접지 이탈 ${number(entry.metrics.contactLossPct, 1)}%`;
   if (!A || !B) $('#compare-summary').textContent = `${name}: ${describe(comparisons[name])} / 설정을 바꾼 뒤 다른 슬롯에 저장하세요. (동일한 6초 시험)`;
   else {
-    const sameRoad = ['road', 'roadHeight', 'roadWidth', 'roadSpacing', 'speed', 'holderMode'].every(key => A.config[key] === B.config[key]);
+    const sameRoad = ['road', 'roadHeight', 'roadWidth', 'roadSpacing', 'roadLeadIn', 'roadRepeatCount', 'singleEvent', 'speed', 'holderMode'].every(key => A.config[key] === B.config[key]);
     const fixed = A.config.holderMode === 'fixed', k = fixed ? 'rmsWheelAcceleration' : 'rmsBodyAcceleration';
     const a = A.metrics[k], b = B.metrics[k], delta = a > .001 ? ` (${number((b / a - 1) * 100, 1)}%)` : '';
     $('#compare-summary').textContent = `6초 시험 · A ${number(a, 2)} → B ${number(b, 2)} m/s²${delta} · 최대 스트로크 ${number(A.metrics.peakTravel * 1000, 1)} → ${number(B.metrics.peakTravel * 1000, 1)} mm · 접지 이탈 ${number(A.metrics.contactLossPct, 1)} → ${number(B.metrics.contactLossPct, 1)}%${sameRoad ? '' : ' · 노면/속도/홀더 조건이 달라 직접 비교에 주의하세요.'}`;
@@ -152,7 +179,12 @@ function capture(name) {
   message(`${name} 설정으로 6초 시험을 실행해 비교 결과를 저장했습니다.`);
 }
 
-for (const input of $$('[data-config]')) input.addEventListener('input', () => setConfig({ [input.dataset.config]: Number(input.value) }));
+for (const input of $$('[data-config]')) input.addEventListener('input', () => {
+  const key = input.dataset.config;
+  const patch = { [key]: Number(input.value) };
+  if (key === 'roadRepeatCount') patch.singleEvent = false;
+  setConfig(patch);
+});
 $('#auto-motion-ratio')?.addEventListener('change', event => setConfig({ autoMotionRatio: event.target.checked }));
 for (const [id, key] of [['structure', 'structure'], ['spring-type', 'springType'], ['holder-mode', 'holderMode']]) $(`#${id}`).addEventListener('change', event => setConfig({ [key]: event.target.value }));
 $('#time-scale').addEventListener('change', event => { sim.config.timeScale = Number(event.target.value); config.timeScale = sim.config.timeScale; });
@@ -164,12 +196,20 @@ function tabs(road) {
   $('#tab-setup').classList.toggle('active', !road); $('#tab-road').classList.toggle('active', road);
   $('#tab-setup').setAttribute('aria-selected', String(!road)); $('#tab-road').setAttribute('aria-selected', String(road));
 }
-$('#run-btn').addEventListener('click', () => { if (sim.config.singleEvent && !singleRun) setConfig({ singleEvent: false }); setRunning(!running); });
+function toggleRunning() {
+  if (singleStopDistance !== null && sim.state.distance >= singleStopDistance) setConfig({ singleEvent: false });
+  setRunning(!running);
+}
+$('#run-btn').addEventListener('click', toggleRunning);
 $('#reset-btn').addEventListener('click', reset);
 $('#single-event-btn').addEventListener('click', () => {
   if (sim.config.road === 'flat') { message('노면을 범프·턱·홀 등으로 선택해 주세요.'); return; }
+  if (sim.config.roadHeight === 0) { message('통과 시험을 위해 노면 높이 · 깊이를 0보다 크게 설정해 주세요.'); return; }
   if (sim.config.speed === 0) { message('단일 통과 시험을 위해 벨트 속도를 0보다 크게 설정해 주세요.'); return; }
-  setConfig({ singleEvent: true }); singleRun = true; setRunning(true); message('장애물 1회 통과 후 자동으로 정지합니다.');
+  const c = setConfig({ singleEvent: true });
+  singleStopDistance = Math.max(c.roadLeadIn + c.roadSpacing + c.roadWidth, roadEventEndDistance(c));
+  setRunning(true);
+  message(c.road === 'washboard' ? '요철 3개 파형을 통과한 뒤 자동으로 정지합니다.' : '장애물 1회 통과 후 자동으로 정지합니다.');
 });
 for (const button of $$('[data-camera]')) button.addEventListener('click', () => { scene?.setCamera(button.dataset.camera); $$('[data-camera]').forEach(b => { const active = b === button; b.classList.toggle('active', active); b.setAttribute('aria-pressed', String(active)); }); });
 $('#fit-btn').addEventListener('click', () => { scene?.setCamera('iso'); $$('[data-camera]').forEach(b => { const active = b.dataset.camera === 'iso'; b.classList.toggle('active', active); b.setAttribute('aria-pressed', String(active)); }); });
@@ -197,7 +237,7 @@ $('#close-help-btn').addEventListener('click', () => $('#help-dialog').close());
 $('#help-dialog').addEventListener('click', event => { if (event.target === $('#help-dialog')) $('#help-dialog').close(); });
 document.addEventListener('keydown', event => {
   if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'SUMMARY'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable || $('#help-dialog').open) return;
-  if (event.code === 'Space') { event.preventDefault(); setRunning(!running); }
+  if (event.code === 'Space') { event.preventDefault(); toggleRunning(); }
   if (event.code === 'KeyR') reset();
   if (event.code === 'KeyF') { const promise = document.fullscreenElement ? document.exitFullscreen() : $('#viewport').requestFullscreen(); promise?.catch(() => message('이 환경에서는 전체 화면을 사용할 수 없습니다.')); }
 });
@@ -225,7 +265,11 @@ function tick(now) {
   const dt = Math.max(0, (now - last) / 1000); last = now;
   if (running && !document.hidden) {
     const clock=advancePlayback(sim,dt,()=>{
-      if(singleRun&&sim.state.distance>=sim.config.roadSpacing+sim.config.roadWidth){singleRun=false;setRunning(false);message('장애물 1회 통과 시험을 완료했습니다.');return false;}
+      if (singleStopDistance !== null && sim.state.distance >= singleStopDistance) {
+        setRunning(false);
+        message(sim.config.road === 'washboard' ? '요철 3개 파형 통과 시험을 완료했습니다.' : '장애물 1회 통과 시험을 완료했습니다.');
+        return false;
+      }
       return true;
     });
     if(clock.stalled){setRunning(false);message('화면이 오래 지연되어 시험을 일시정지했습니다. 시작 버튼을 눌러 이어가세요.');}

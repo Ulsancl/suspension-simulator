@@ -1,3 +1,5 @@
+import { mountConditionGauges } from './condition-readouts.js';
+
 const STORAGE_KEY = 'suspension-lab-dashboard-v1';
 const VIEWS = ['bench', 'analysis', 'experiments', 'validation'];
 const CHARTS = ['motion', 'force', 'acceleration'];
@@ -10,6 +12,7 @@ const element = id => document.getElementById(id);
 function setText(id, value) { const node=element(id);if(node&&node.textContent!==value)node.textContent=value; }
 
 export function initDashboard({ getView, getChartState, repaint }) {
+  const updateConditionGauges = mountConditionGauges();
   let preferences = { settingsExpanded:{}, chartLayout:'overview' };
   let focusedChart = 'none';
   let scrollBeforeFocus = 0;
@@ -93,7 +96,10 @@ export function initDashboard({ getView, getChartState, repaint }) {
   wide.addEventListener('change',apply);
   apply();
   return {
-    update(state,currentConfig,currentMetrics) { snapshot=state;config=currentConfig;metrics=currentMetrics;updateContext(); },
+    update(state,currentConfig,currentMetrics) {
+      if (config !== currentConfig || snapshot?.time !== state.time) updateConditionGauges(state,currentConfig);
+      snapshot=state;config=currentConfig;metrics=currentMetrics;updateContext();
+    },
     getState:()=>({view:getView(),settingsExpanded:expanded(),chartLayout:preferences.chartLayout,focusedChart}),
   };
 }

@@ -1,5 +1,5 @@
 import { checkProjectJSON } from './project-input.js';
-import { DEFAULT_CONFIG, normalizeConfig, SuspensionSimulation } from './physics.js';
+import { DEFAULT_CONFIG, normalizeConfig, roadEventEndDistance, SuspensionSimulation } from './physics.js';
 
 export const EXPERIMENT_SCHEMA_VERSION = 1;
 export const MODEL_VERSION = 'quarter-car-1.3';
@@ -95,10 +95,8 @@ function settledEstimate(config, duration, history) {
   const thresholds = { travel: 0.002, bodyVelocity: 0.01, wheelVelocity: 0.02, minimumWindow: 0.5 };
   const method = '노면 자극 종료 후 트래블 ±2 mm, 차체 속도 ±10 mm/s, 휠 속도 ±20 mm/s가 기록 끝까지 최소 0.5초 유지되는 첫 구간. 120 Hz 기록을 사용한 추정값.';
   const base = { estimatedSeconds: null, status: 'not-applicable', eventEndTime: null, thresholds, method };
-  if (!config.singleEvent || config.road === 'flat' || config.roadHeight === 0 || config.speed === 0) return base;
-  const endDistance = config.road === 'washboard'
-    ? config.roadSpacing * 0.35 + 3 * config.roadWidth + config.tireRadius
-    : config.roadSpacing * 0.55 + config.roadWidth / 2 + config.tireRadius;
+  const endDistance = roadEventEndDistance(config);
+  if (endDistance === null || config.speed === 0) return base;
   const eventEndTime = endDistance / (config.speed / 3.6);
   const output = { ...base, status: 'not-observed', eventEndTime };
   if (duration < eventEndTime + thresholds.minimumWindow) return output;
@@ -240,6 +238,8 @@ function validateStoredConfig(input, historical = false) {
   if (!isObject(input)) invalid('저장된 설정 형식이 올바르지 않습니다.');
   const normalized = normalizeConfig(input);
   for (const [key, value] of Object.entries(DEFAULT_CONFIG)) {
+    // Configurations written before the road sequence controls used these defaults.
+    if ((key === 'roadLeadIn' || key === 'roadRepeatCount') && !has(input, key)) continue;
     if (key === 'componentProfile') {
       if (input[key] == null) {
         if (normalized[key] !== null) invalid('저장된 부품 프로파일이 올바르지 않습니다.');
@@ -653,7 +653,7 @@ export class ExperimentLibrary {
         this._activeKey = this._branchKey;
       }
       this._runs = project.runs;
-      return this._persist({ config: clone(project.config), name: project.name, vehicleName: project.vehicleName, count: project.runs.length });
+      return this._persist({ config: normalizeConfig(project.config), name: project.name, vehicleName: project.vehicleName, count: project.runs.length });
     });
   }
 
@@ -666,7 +666,7 @@ export class ExperimentLibrary {
       const runs = project ? project.runs : validateLibrary(data, this.maxRuns).runs;
       this._activeKey = this._branchKey;
       this._runs = runs;
-      return this._persist({ count: runs.length, restoredId: id, ...(project ? { config: clone(project.config), name: project.name } : {}) });
+      return this._persist({ count: runs.length, restoredId: id, ...(project ? { config: normalizeConfig(project.config), name: project.name } : {}) });
     });
   }
 
