@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
+const { windowsWriteProject } = require('./windows-save.cjs');
 
 async function readBounded(handle, limit) {
   const chunks = [];
@@ -34,13 +35,14 @@ async function openProjectFile(target, stat, recheck, limit) {
   }
 }
 
-async function saveProjectFile(target, contents, recheck, temporary = target + '.' + randomUUID() + '.tmp') {
+async function saveSiblingProjectFile(target, contents, recheck, temporary = target + '.' + randomUUID() + '.tmp') {
   const previous = await recheck(target, true);
   const handle = await fsp.open(temporary, 'wx', 0o600);
   let published = false;
   try {
     try {
       await handle.writeFile(contents, 'utf8');
+      await handle.sync();
     } finally {
       await handle.close();
     }
@@ -55,4 +57,10 @@ async function saveProjectFile(target, contents, recheck, temporary = target + '
   }
 }
 
-module.exports = { readBounded, openProjectFile, saveProjectFile };
+async function saveProjectFile(target, contents, recheck) {
+  if (process.platform !== 'win32') return saveSiblingProjectFile(target, contents, recheck);
+  const previous = await recheck(target, true);
+  return windowsWriteProject(target, contents, previous != null);
+}
+
+module.exports = { readBounded, openProjectFile, saveProjectFile, saveSiblingProjectFile };
