@@ -112,6 +112,14 @@ try {
   const futureDownloadEvent = futurePage.waitForEvent('download'); await futurePage.locator('[data-recovery-action="export"]').click();
   const futureDownload = await futureDownloadEvent; const futurePath = path.join(output, 'future-original.json'); await futureDownload.saveAs(futurePath);
   assert.equal(await fs.readFile(futurePath, 'utf8'), futureRaw);
+  futurePage.once('dialog', dialog => dialog.dismiss());
+  await futurePage.locator('[data-recovery-action="delete"]').click();
+  assert.equal(await futurePage.locator('[data-recovery-action="export"]').count(), 1);
+  futurePage.once('dialog', dialog => dialog.accept());
+  await futurePage.locator('[data-recovery-action="delete"]').click();
+  await futurePage.locator('#experiment-recovery-panel').waitFor({ state: 'hidden' });
+  assert.equal(await source(futurePage), futureRaw);
+  assert.equal((await futurePage.evaluate(() => window.suspensionLab.getExperiments())).length, 1);
   checks.push('unsupported schema stays distinguishable, cannot be falsely restored and survives durable new work byte-for-byte');
   const fallback = await futurePage.evaluate(async () => {
     const { ExperimentLibrary, runExperiment } = await import('/src/experiments.js');
@@ -123,7 +131,7 @@ try {
     const library = new ExperimentLibrary(options), initial = await library.ready();
     const current = runExperiment({}, { duration: 1 }); const saved = await library.save(current);
     const restarted = new ExperimentLibrary(options); await restarted.ready();
-    return { initial, saved, original: localStorage.getItem(key), raw, count: restarted.list().length, oldVersion: restarted.get(previous.id).modelVersion, recovery: restarted.exportRecovery(restarted.getRecoveries()[0].id) };
+    return { initial, saved, original: localStorage.getItem(key), raw, count: restarted.list().length, oldVersion: restarted.get(previous.id).modelVersion, recovery: await restarted.exportRecovery(restarted.getRecoveries()[0].id) };
   });
   assert.equal(fallback.initial.persistence, 'localStorage'); assert.equal(fallback.initial.fallbackReason, 'storage-unavailable');
   assert.equal(fallback.saved.persisted, true); assert.equal(fallback.count, 2);

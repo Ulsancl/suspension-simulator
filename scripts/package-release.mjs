@@ -40,7 +40,7 @@ for (const file of documentFiles) {
 }
 for(const file of [...evidenceFiles].sort())entries.push({name:file,data:readInput(root, path.join(root,file))});
 entries.push({ name:'serve.mjs', data:readInput(root, path.join(root, 'scripts/serve-release.mjs')) });
-entries.push({ name:'start.cmd', data:Buffer.from('@echo off\r\ncd /d "%~dp0"\r\nwhere node >nul 2>nul\r\nif errorlevel 1 (echo Node.js is required. & pause & exit /b 1)\r\nnode serve.mjs --open\r\npause\r\n') });
+entries.push({ name:'start.cmd', data:Buffer.from('@echo off\r\ncd /d "%~dp0"\r\nif not exist "%ProgramFiles%\\nodejs\\node.exe" (echo Use the official Node.js installer or run node serve.mjs from a trusted terminal. & pause & exit /b 1)\r\n"%ProgramFiles%\\nodejs\\node.exe" "%~dp0serve.mjs" --open\r\npause\r\n') });
 entries.push({ name:'HOW-TO.txt', data:Buffer.from(`Suspension Lab ${packageJSON.version} engineering preview\r\n\r\nExtract the complete ZIP. Install Node.js if necessary, then double-click start.cmd or run: node serve.mjs\r\nOpen http://127.0.0.1:5175/ and keep the terminal open. No npm install is needed.\r\nUse the same browser and origin to retain its IndexedDB experiment library. Export project JSON for backups and transfer.\r\nThe app can work offline after the first successful load and cache installation. Browser installation availability varies.\r\nThis reduced vertical model is not yet validated for a specific production vehicle. Read docs/model.md and docs/engineering-release.md before engineering use.\r\nThe app/ directory may also be hosted at the root of an HTTPS website. Preserve THREE-LICENSE.txt.\r\n`) });
 
 // Store ZIP entries without adding a packaging dependency. Filenames are UTF-8.

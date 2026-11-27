@@ -3,6 +3,14 @@
   "productName": "Suspension Lab",
   "copyright": "Suspension Lab",
   "asar": true,
+  "electronFuses": {
+    "runAsNode": false,
+    "enableNodeOptionsEnvironmentVariable": false,
+    "enableNodeCliInspectArguments": false,
+    "enableEmbeddedAsarIntegrityValidation": true,
+    "onlyLoadAppFromAsar": true,
+    "grantFileProtocolExtraPrivileges": false
+  },
   "electronDist": "node_modules/electron/dist",
   "directories": { "output": "release/windows", "buildResources": "desktop/assets" },
   "files": ["desktop/**/*.cjs", "desktop/assets/app.ico", "dist/**/*", "package.json"],

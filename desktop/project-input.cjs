@@ -15,7 +15,9 @@ function checkProjectJSON(text, reject) {
     } else if (character === '"') { quoted = true; stringLength = 0; }
     else if (character === '{' || character === '[') {
       if (++depth > 16 || ++containers > 100000) reject('프로젝트 구조가 허용 복잡도를 초과합니다.');
-    } else if (character === '}' || character === ']') depth--;
+    } else if (character === '}' || character === ']') {
+      if (--depth < 0) reject('JSON 구조가 올바르지 않습니다.');
+    }
     else if ((character === ',' || character === ':') && ++separators > 3000000) reject('프로젝트 항목 수가 허용 범위를 초과합니다.');
   }
 }

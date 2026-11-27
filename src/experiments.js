@@ -1,4 +1,4 @@
-import { checkProjectJSON } from './project-input.js';
+import { MAX_PROJECT_BYTES, checkProjectJSON, utf8Length } from './project-input.js';
 import { DEFAULT_CONFIG, normalizeConfig, roadEventEndDistance, SuspensionSimulation } from './physics.js';
 
 export const EXPERIMENT_SCHEMA_VERSION = 1;
@@ -6,7 +6,11 @@ export const MODEL_VERSION = 'quarter-car-1.3';
 export const MAX_SAVED_EXPERIMENTS = 12;
 export const MAX_EXPERIMENT_DURATION = 30;
 const MAX_SAMPLES = 3601;
-const MAX_JSON_CHARACTERS = 32 * 1024 * 1024;
+const MAX_RECOVERY_COPIES = 8;
+const MAX_RECOVERY_BYTES = 64 * 1024 * 1024;
+const RECOVERY_FORMAT = 'suspension-lab-recovery/v1';
+const RECOVERY_INDEX_FORMAT = 'suspension-lab-recovery-index/v1';
+const RECOVERY_ID = /^(?:[a-f0-9]{64}|[a-f0-9-]{36})$/i;
 const CHUNK_SECONDS = 0.1;
 const CONTACT_LOSS_GUARD = 1;
 const STORAGE_KEY = 'suspension-lab:experiments:v1';
@@ -25,12 +29,14 @@ export class ExperimentValidationError extends Error {
 
 function invalid(message) { throw new ExperimentValidationError(message); }
 
+const versionLabel = value => typeof value === 'string' && value.length <= 80 ? value : null;
+
 function validateVersion(data, label) {
   if (!isObject(data)) invalid(`${label} 형식이 올바르지 않습니다.`);
-  if (data.schemaVersion !== EXPERIMENT_SCHEMA_VERSION) throw new ExperimentValidationError(`${label}의 스키마 ${String(data.schemaVersion)}는 이 앱에서 열 수 없습니다. 원문을 보관하고 해당 형식을 지원하는 버전을 사용하세요.`, 'unsupported-schema');
+  if (data.schemaVersion !== EXPERIMENT_SCHEMA_VERSION) throw new ExperimentValidationError(`${label}의 스키마 ${(Number.isSafeInteger(data.schemaVersion) ? data.schemaVersion : '확인 불가')}는 이 앱에서 열 수 없습니다. 원문을 보관하고 해당 형식을 지원하는 버전을 사용하세요.`, 'unsupported-schema');
   if (data.modelVersion !== MODEL_VERSION && !LEGACY_MODELS.has(data.modelVersion)) {
-    const reason = /^quarter-car-\d+\.\d+$/.test(String(data.modelVersion)) ? 'unsupported-model' : 'unknown-model';
-    throw new ExperimentValidationError(`${label}의 모델 ${String(data.modelVersion)}은 이 앱에서 열 수 없습니다. 원문은 현행 계산으로 변환하지 않습니다.`, reason);
+    const reason = /^quarter-car-\d+\.\d+$/.test((versionLabel(data.modelVersion) ?? '')) ? 'unsupported-model' : 'unknown-model';
+    throw new ExperimentValidationError(`${label}의 모델 ${(versionLabel(data.modelVersion) ?? '확인 불가')}은 이 앱에서 열 수 없습니다. 원문은 현행 계산으로 변환하지 않습니다.`, reason);
   }
   return data.modelVersion !== MODEL_VERSION;
 }
@@ -228,10 +234,11 @@ export async function runDampingSweep(config = {}, options = {}) {
   };
 }
 
-function parseInput(input, maximum = MAX_JSON_CHARACTERS) {
+function parseInput(input, limits) {
   if (typeof input !== 'string') return input;
-  if (input.length > maximum) invalid('가져올 파일이 허용 크기를 초과합니다.');
-  try { return JSON.parse(input); } catch { invalid('JSON 형식이 올바르지 않습니다.'); }
+  checkProjectJSON(input, message => { throw new ExperimentValidationError(message, 'resource-limit'); }, limits);
+  try { return JSON.parse(input.charCodeAt(0) === 0xfeff ? input.slice(1) : input); }
+  catch { invalid('JSON 형식이 올바르지 않습니다.'); }
 }
 
 function validateStoredConfig(input, historical = false) {
@@ -266,7 +273,7 @@ function boundedNumber(value, label, min = -1e8, max = 1e8) {
 
 /** Strict shape/range validation, followed by a whitelist copy. No HTML is loaded. */
 export function validateExperiment(input) {
-  const data = parseInput(input, 4 * 1024 * 1024);
+  const data = parseInput(input, { maxBytes: 4 * 1024 * 1024 });
   const historical = validateVersion(data, '실험 기록');
   if (data.type !== 'suspension-lab-experiment') invalid('지원하지 않는 실험 기록 형식입니다.');
   if (typeof data.id !== 'string' || !UUID.test(data.id)) invalid('기록 ID 형식이 올바르지 않습니다.');
@@ -322,7 +329,6 @@ function validateHistoricalKPIs(input) {
 }
 
 function validateProject(input, maxRuns) {
-  if (typeof input === 'string') checkProjectJSON(input, message => { throw new ExperimentValidationError(message, 'resource-limit'); });
   const data = parseInput(input);
   const allowed = new Set(['type', 'schemaVersion', 'modelVersion', 'name', 'exportedAt', 'config', 'runs', 'vehicleName']);
   if (isObject(data) && Object.keys(data).some(key => !allowed.has(key))) invalid('프로젝트에 지원하지 않는 항목이 있습니다.');
@@ -382,16 +388,28 @@ function persistenceReason(error) {
   return error?.name === 'QuotaExceededError' || error?.code === 22 || /quota/i.test(error?.message ?? '') ? 'quota' : 'storage-unavailable';
 }
 
-const recoveryText = raw => typeof raw === 'string' ? raw : JSON.stringify(raw);
-function sameRaw(first, second) {
-  if (Object.is(first, second)) return true;
-  if (typeof first !== typeof second || !first || !second || typeof first !== 'object' || Array.isArray(first) !== Array.isArray(second)) return false;
-  const keys = Object.keys(first), otherKeys = Object.keys(second);
-  return keys.length === otherKeys.length && keys.every((key, index) => key === otherKeys[index] && sameRaw(first[key], second[key]));
+function recoveryText(raw) {
+  const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  if (typeof text !== 'string' || utf8Length(text, MAX_PROJECT_BYTES) > MAX_PROJECT_BYTES) {
+    invalid('원문의 크기가 복구 한도를 초과합니다. 기존 저장 원문을 보관합니다.');
+  }
+  return text;
 }
+
+function recoveryMetadata(entry) {
+  return {
+    id: entry.id,
+    reason: versionLabel(entry.reason),
+    modelVersion: versionLabel(entry.modelVersion),
+    schemaVersion: Number.isSafeInteger(entry.schemaVersion) ? entry.schemaVersion : null,
+    restorable: typeof entry.restorable === 'boolean' ? entry.restorable : null,
+    bytes: Number.isSafeInteger(entry.bytes) && entry.bytes > 0 && entry.bytes <= MAX_RECOVERY_BYTES ? entry.bytes : null,
+  };
+}
+
 async function rawHash(raw) {
   if (!globalThis.crypto?.subtle) return null;
-  const bytes = new TextEncoder().encode(recoveryText(raw));
+  const bytes = new TextEncoder().encode(raw);
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
 }
@@ -443,10 +461,10 @@ export class ExperimentLibrary {
           const library = validateLibrary(payload, this.maxRuns);
           historical = library.modelVersion !== MODEL_VERSION || library.runs.some(isLegacyExperiment);
           this._runs = library.runs;
-          if (historical) await this._captureRecovery(payload, 'legacy-model', this.key);
+          if (historical) await this._captureRecovery(payload, 'legacy-model', this.key, true, library.modelVersion);
         } catch (error) {
           problem = error.reason ?? persistenceReason(error);
-          await this._captureRecovery(payload, problem, this.key);
+          await this._captureRecovery(payload, problem, this.key, false);
         }
       }
       if (historical || problem || branch != null) this._activeKey = this._branchKey;
@@ -454,7 +472,7 @@ export class ExperimentLibrary {
         try { this._runs = validateLibrary(branch, this.maxRuns).runs; problem = null; }
         catch (error) {
           problem = error.reason ?? persistenceReason(error);
-          await this._captureRecovery(branch, problem, this._branchKey);
+          await this._captureRecovery(branch, problem, this._branchKey, false);
           this._writeBlocked = true;
           this._runs = [];
         }
@@ -463,7 +481,7 @@ export class ExperimentLibrary {
     } catch (error) {
       // A failed read must never turn an unknown library into an empty overwrite.
       this._writeBlocked = true;
-      if (payload != null) await this._captureRecovery(payload, error.reason ?? persistenceReason(error), this.key);
+      if (payload != null) await this._captureRecovery(payload, error.reason ?? persistenceReason(error), this.key, false);
       this.status = { ok: false, persisted: false, reason: error.reason ?? persistenceReason(error), persistence: this.persistence, recoveryCount: this._recoveries.length };
     }
     return { ...this.status };
@@ -484,68 +502,157 @@ export class ExperimentLibrary {
     throw new Error('Storage unavailable');
   }
 
-  async _loadRecoveries() {
-    const stored = await this._read(this._recoveryIndexKey);
-    if (stored == null) return;
-    const index = parseInput(stored);
-    if (!isObject(index) || index.format !== 'suspension-lab-recovery-index/v1' || !Array.isArray(index.keys) || index.keys.length > 1000 || index.keys.some(key => typeof key !== 'string' || !key.startsWith(`${this.key}:recovery:`)) || new Set(index.keys).size !== index.keys.length) invalid('원문 복구 목록을 읽지 못했습니다. 저장 공간을 덮어쓰지 않고 새 작업은 메모리에 보관합니다.');
-    for (const key of index.keys) {
-      const entry = parseInput(await this._read(key), MAX_JSON_CHARACTERS * 4);
-      if (!isObject(entry) || entry.format !== 'suspension-lab-recovery/v1' || typeof entry.id !== 'string' || key !== `${this.key}:recovery:${entry.id}` || !has(entry, 'raw') || typeof entry.reason !== 'string') invalid('원문 복구 사본을 읽지 못했습니다.');
-      this._recoveries.push({ ...entry, persisted: true });
+  async _remove(key) {
+    if (this._database) {
+      return new Promise((resolve, reject) => {
+        const transaction = this._database.transaction(STORE_NAME, 'readwrite');
+        transaction.objectStore(STORE_NAME).delete(key);
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB delete failed'));
+      });
     }
+    return this._storage?.removeItem(key);
   }
 
-  async _captureRecovery(raw, reason, sourceKey) {
-    const existing = this._recoveries.find(entry => entry.sourceKey === sourceKey && sameRaw(entry.raw, raw));
-    if (existing) return existing;
-    let data; try { data = parseInput(raw); } catch { data = null; }
-    const hash = await rawHash(raw);
-    const entry = { format: 'suspension-lab-recovery/v1', id: hash ?? createId(), createdAt: new Date().toISOString(), reason, sourceKey, sourceStorage: this.persistence, modelVersion: data?.modelVersion ?? null, schemaVersion: data?.schemaVersion ?? null, sha256: hash, raw: clone(raw), persisted: false };
-    // Different sources can contain identical bytes without requiring a second copy.
-    const same = this._recoveries.find(item => item.id === entry.id);
-    if (same) return same;
-    this._recoveries.push(entry);
-    return entry;
-  }
+  _recoveryKey(id) { return this.key + ':recovery:' + id; }
 
-  getRecoveries() {
-    return this._recoveries.map(({ raw, ...entry }) => {
-      let restorable = false;
-      try { const data = parseInput(raw); if (data?.type === 'suspension-lab-project') validateProject(data, this.maxRuns); else validateLibrary(data, this.maxRuns); restorable = true; } catch {}
-      return { ...clone(entry), restorable };
+  async _readRecoveryIndex() {
+    const prefix = this._recoveryKey('');
+    const index = parseInput(await this._read(this._recoveryIndexKey), { maxBytes: 1024 * 1024 });
+    if (index == null) return [];
+    if (!isObject(index) || index.format !== RECOVERY_INDEX_FORMAT || !Array.isArray(index.keys) ||
+        index.keys.length > 1000 || index.keys.some(key => typeof key !== 'string' ||
+          !key.startsWith(prefix) || !RECOVERY_ID.test(key.slice(prefix.length))) ||
+        new Set(index.keys).size !== index.keys.length) invalid('원문 복구 목록을 읽지 못했습니다.');
+    // The old index contains only keys. Keep each reference available for on-demand
+    // export/restore/delete, without loading any of the old payloads at startup.
+    const metadata = new Map((Array.isArray(index.entries) && index.entries.length <= 1000 ? index.entries : [])
+      .filter(entry => isObject(entry) && typeof entry.id === 'string')
+      .map(entry => [entry.id, entry]));
+    return index.keys.map(key => {
+      const id = key.slice(prefix.length);
+      return { ...recoveryMetadata(metadata.get(id) ?? { id }), persisted: true };
     });
   }
 
-  /** String sources are returned byte-for-byte, without parsing or reformatting. */
-  exportRecovery(id) {
+  async _loadRecoveries() { this._recoveries = await this._readRecoveryIndex(); }
+
+  async _captureRecovery(raw, reason, sourceKey, restorable, modelVersion) {
+    let text;
+    try { text = recoveryText(raw); } catch { return; } // The original slot remains available.
+    const hash = await rawHash(text);
+    const id = hash ?? createId();
+    if (this._recoveries.some(entry => entry.id === id)) return;
+    // This is only a copy of a file the user already has. Bound pending copies too.
+    if (sourceKey === 'project-import' && this._recoveries.some(entry => !entry.persisted && entry.sourceKey === sourceKey)) return;
+    let schemaVersion = restorable ? EXPERIMENT_SCHEMA_VERSION : null;
+    if (modelVersion === undefined) {
+      try {
+        const data = parseInput(text);
+        modelVersion = data?.modelVersion;
+        schemaVersion = data?.schemaVersion;
+      } catch {}
+    }
+    const metadata = recoveryMetadata({ id, reason, modelVersion, schemaVersion, restorable });
+    const entry = { ...metadata, format: RECOVERY_FORMAT, sourceKey, raw: text, persisted: false };
+    this._recoveries.push(entry);
+  }
+
+  getRecoveries() {
+    return this._recoveries.map(entry => ({ ...recoveryMetadata(entry), persisted: entry.persisted, sourceOnly: !!entry.sourceOnly }));
+  }
+
+  async _readRecoveryCopy(id) {
+    const entry = parseInput(await this._read(this._recoveryKey(id)), {
+      maxBytes: 6 * MAX_PROJECT_BYTES + 8192,
+      maxStringLength: 6 * MAX_PROJECT_BYTES,
+    });
+    if (!isObject(entry) || entry.format !== RECOVERY_FORMAT || entry.id !== id || !has(entry, 'raw')) {
+      invalid('원문 복구 사본을 읽지 못했습니다.');
+    }
+    const text = recoveryText(entry.raw);
+    if (id.length === 64 && await rawHash(text) !== id) invalid('원문 복구 사본을 확인하지 못했습니다.');
+    return text;
+  }
+
+  /** Read a single selected backup; keep string sources byte-for-byte. */
+  async exportRecovery(id) {
+    await this.ready();
     const entry = this._recoveries.find(item => item.id === id);
     if (!entry) invalid('원문 복구 사본을 찾지 못했습니다.');
-    return recoveryText(entry.raw);
+    return entry.raw ?? this._readRecoveryCopy(id);
+  }
+
+  _withRecoveryLock(operation) {
+    const locks = globalThis.navigator?.locks;
+    return locks ? locks.request(this._recoveryIndexKey, operation) : operation();
+  }
+
+  async _writeRecoveryIndex(entries) {
+    const index = { format: RECOVERY_INDEX_FORMAT, keys: entries.map(entry => this._recoveryKey(entry.id)), entries: entries.map(recoveryMetadata) };
+    await this._write(this._recoveryIndexKey, index);
+    const verified = await this._readRecoveryIndex();
+    if (JSON.stringify(verified.map(recoveryMetadata)) !== JSON.stringify(index.entries)) throw new Error('Recovery index verification failed');
   }
 
   async _ensureRecoveries() {
-    if (!this._recoveries.length) return;
-    const existingIndex = await this._read(this._recoveryIndexKey);
-    const index = existingIndex == null ? null : parseInput(existingIndex);
-    if (index && (!isObject(index) || index.format !== 'suspension-lab-recovery-index/v1' || !Array.isArray(index.keys) || index.keys.length > 1000 || index.keys.some(key => typeof key !== 'string' || !key.startsWith(`${this.key}:recovery:`)))) throw new Error('Recovery index is invalid');
-    const indexKeys = [...new Set(index?.keys ?? [])];
-    for (const entry of this._recoveries) {
-      const key = `${this.key}:recovery:${entry.id}`;
-      const existing = await this._read(key);
-      if (existing == null) {
-        const { persisted, ...copy } = entry;
-        await this._write(key, copy);
-      } else if (!sameRaw(parseInput(existing, MAX_JSON_CHARACTERS * 4)?.raw, entry.raw)) throw new Error('Recovery copy conflict');
-      const verified = parseInput(await this._read(key), MAX_JSON_CHARACTERS * 4);
-      if (!sameRaw(verified?.raw, entry.raw) || verified?.id !== entry.id || verified?.format !== entry.format) throw new Error('Recovery verification failed');
-      if (!indexKeys.includes(key)) indexKeys.push(key);
-    }
-    if (indexKeys.length > 1000) throw new Error('Recovery index capacity reached');
-    await this._write(this._recoveryIndexKey, { format: 'suspension-lab-recovery-index/v1', keys: indexKeys });
-    const verifiedIndex = parseInput(await this._read(this._recoveryIndexKey));
-    if (JSON.stringify(verifiedIndex?.keys) !== JSON.stringify(indexKeys)) throw new Error('Recovery index verification failed');
-    for (const entry of this._recoveries) entry.persisted = true;
+    const pending = this._recoveries.filter(entry => !entry.persisted && !entry.sourceOnly);
+    if (!pending.length) return;
+    await this._withRecoveryLock(async () => {
+      const index = await this._readRecoveryIndex();
+      for (const entry of pending) {
+        const existing = index.find(item => item.id === entry.id);
+        if (existing) {
+          Object.assign(entry, existing, { raw: undefined });
+          continue;
+        }
+        const copy = { id: entry.id, format: entry.format, raw: entry.raw };
+        const bytes = utf8Length(JSON.stringify(copy), MAX_RECOVERY_BYTES);
+        if (index.length >= MAX_RECOVERY_COPIES || index.some(item => item.bytes == null) ||
+            index.reduce((total, item) => total + item.bytes, bytes) > MAX_RECOVERY_BYTES) {
+          // Every local capture has a separate, protected original slot. Import
+          // callers likewise keep the selected file even when there is no room.
+          entry.sourceOnly = true;
+          if (entry.sourceKey === 'project-import') this._recoveries = this._recoveries.filter(item => item !== entry);
+          continue;
+        }
+        const key = this._recoveryKey(entry.id);
+        const owned = (await this._read(key)) == null;
+        const metadata = { ...recoveryMetadata({ ...entry, bytes }), persisted: true };
+        try {
+          if (owned) await this._write(key, copy);
+          if (await this._readRecoveryCopy(entry.id) !== entry.raw) throw new Error('Recovery verification failed');
+          await this._writeRecoveryIndex([...index, metadata]);
+        } catch (error) {
+          // A failed write must not leak an unindexed copy into the storage quota.
+          if (owned) {
+            const current = await this._readRecoveryIndex().catch(() => null);
+            if (current && !current.some(item => item.id === entry.id)) await this._remove(key).catch(() => {});
+          }
+          throw error;
+        }
+        index.push(metadata);
+        Object.assign(entry, metadata, { raw: undefined });
+      }
+    });
+  }
+
+  deleteRecovery(id) {
+    return this._mutate(async () => {
+      const entry = this._recoveries.find(item => item.id === id);
+      if (!entry) invalid('원문 복구 사본을 찾지 못했습니다.');
+      if (entry.persisted) {
+        await this._withRecoveryLock(async () => {
+          const index = await this._readRecoveryIndex();
+          // Remove the payload first. If index publication fails, the reference
+          // remains visible and the same delete can be retried.
+          await this._remove(this._recoveryKey(id));
+          await this._writeRecoveryIndex(index.filter(item => item.id !== id));
+        });
+      }
+      this._recoveries = this._recoveries.filter(item => item.id !== id);
+      this.status.recoveryCount = this._recoveries.length;
+    });
   }
 
   _mutate(operation) {
@@ -640,16 +747,9 @@ export class ExperimentLibrary {
   /** Import replaces the current library atomically after all data validates. */
   importProject(input) {
     return this._mutate(async () => {
-      let project;
-      try { project = validateProject(input, this.maxRuns); }
-      catch (error) {
-        if (error.reason === 'resource-limit') throw error;
-        await this._captureRecovery(input, error.reason ?? 'corrupt-storage', 'project-import');
-        if (!this._writeBlocked && (this._database || this._storage)) { try { await this._ensureRecoveries(); } catch {} }
-        throw error;
-      }
+      const project = validateProject(input, this.maxRuns);
       if (project.modelVersion !== MODEL_VERSION || project.runs.some(isLegacyExperiment)) {
-        await this._captureRecovery(input, 'legacy-model', 'project-import');
+        await this._captureRecovery(input, 'legacy-model', 'project-import', true, project.modelVersion);
         this._activeKey = this._branchKey;
       }
       this._runs = project.runs;
@@ -659,9 +759,7 @@ export class ExperimentLibrary {
 
   restoreRecovery(id) {
     return this._mutate(async () => {
-      const entry = this._recoveries.find(item => item.id === id);
-      if (!entry) invalid('원문 복구 사본을 찾지 못했습니다.');
-      const data = parseInput(entry.raw);
+      const data = parseInput(await this.exportRecovery(id));
       const project = data?.type === 'suspension-lab-project' ? validateProject(data, this.maxRuns) : null;
       const runs = project ? project.runs : validateLibrary(data, this.maxRuns).runs;
       this._activeKey = this._branchKey;

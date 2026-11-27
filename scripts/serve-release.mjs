@@ -41,9 +41,15 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`Suspension Lab: ${url}\nKeep this terminal open. Press Ctrl+C to stop.`);
   // Only the process that acquired the port may open its origin.
   if (process.argv.includes('--open')) {
-    const command = process.platform === 'win32' ? 'rundll32.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-    const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', url] : [url];
-    const child = spawn(command, args, { stdio: 'ignore', windowsHide: true });
+    const windows = process.platform === 'win32';
+    const systemRoot = process.env.SystemRoot;
+    if (windows && (!systemRoot || !path.isAbsolute(systemRoot))) {
+      console.error(`Open ${url} manually.`);
+      return;
+    }
+    const command = windows ? path.join(systemRoot, 'System32', 'rundll32.exe') : process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open';
+    const args = process.platform === 'win32' ? [path.join(systemRoot, 'System32', 'url.dll') + ',FileProtocolHandler', url] : [url];
+    const child = spawn(command, args, { cwd: windows ? path.join(systemRoot, 'System32') : undefined, stdio: 'ignore', windowsHide: true });
     child.on('error', () => console.error(`Open ${url} manually.`));
     child.unref();
   }

@@ -1,3 +1,4 @@
+import { parseBoundedJSON } from './project-input.js';
 import './style.css';
 import { SuspensionSimulation, DEFAULT_CONFIG, normalizeConfig, roadEventEndDistance } from './physics.js';
 import { SuspensionScene } from './scene.js';
@@ -223,7 +224,7 @@ $('#import-file').addEventListener('change', async event => {
   const file = event.target.files?.[0]; if (!file) return;
   try {
     if (file.size > 1000000) throw new Error('설정 파일은 1MB 이하여야 합니다.');
-    const data = JSON.parse(await file.text());
+    const data = parseBoundedJSON(await file.text(), { maxBytes: 1000000 });
     if (data?.format && data.format !== 'suspension-lab/v1') throw new Error('지원되지 않는 설정 형식입니다.');
     const candidate = data.config || data;
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) || !Object.keys(DEFAULT_CONFIG).some(key => Object.hasOwn(candidate, key))) throw new Error('유효한 서스펜션 설정이 없습니다.');

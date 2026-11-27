@@ -52,11 +52,11 @@ CSV·HTML·PNG·GLB와 프로젝트 내보내기는 Windows 파일 대화상자�
 
 ## 업데이트·제거·파일 확인
 
-자동 업데이트와 코드 서명 인증서 설정은 포함하지 않습니다. 새 버전으로 갱신할 때 프로젝트를 백업하고 앱을 종료한 뒤 새 설치 프로그램을 실행합니다. 앱 이름·주소·저장 폴더를 유지합니다.
+새 버전은 수동으로 설치합니다. 정식 배포본은 아래 서명 단계에서 승인된 게시자를 확인합니다. 새 버전으로 갱신할 때 프로젝트를 백업하고 앱을 종료한 뒤 새 설치 프로그램을 실행합니다. 앱 이름·주소·저장 폴더를 유지합니다.
 
 Windows **설정 → 앱 → 설치된 앱 → Suspension Lab → 제거**로 앱을 제거합니다. 일반 제거는 사용자 데이터 폴더를 삭제하지 않습니다. 해당 폴더를 직접 삭제하면 설정과 보관 기록도 제거됩니다.
 
-설치 파일 옆의 `Suspension-Lab-Setup-1.3.0.exe.sha256`은 전달 파일의 동일성 확인에 사용합니다. 해시는 게시자 서명을 대신하지 않습니다. 생성한 설치 파일의 실제 서명 상태는 `NotSigned`입니다. 파일 확인에는 동명 `.sha256`을 사용하며 이 문서에 해시·바이트 수를 고정하지 않습니다.
+설치 파일 옆의 `.sha256`으로 전송 중 파일이 바뀌었는지 확인할 수 있습니다. 게시자는 Windows의 디지털 서명에서 확인합니다. [Get-AuthenticodeSignature](https://learn.microsoft.com/powershell/module/microsoft.powershell.security/get-authenticodesignature)
 
 ## 소스 실행·패키징
 
@@ -73,7 +73,11 @@ npm run desktop
 npm run package:desktop
 ```
 
-출력 파일은 `release/windows/Suspension-Lab-Setup-1.3.0.exe`와 같은 이름의 `.sha256` 파일입니다. 웹 ZIP은 `npm run build` 이후 `npm run package:release`로 별도 생성합니다.
+이 명령은 로컬 검증용 미서명 설치 파일과 체크섬을 `release/windows/`에 만듭니다. `npm run package:desktop:test`는 Playwright의 메인 프로세스 검사를 위해 Node Inspector를 허용하며 결과를 `release/windows-test/`에 둡니다. CI는 두 구성의 Electron Fuses를 확인하고 테스트용 설치 파일을 아티팩트로 게시하지 않습니다. [Electron Fuses](https://www.electronjs.org/docs/latest/tutorial/fuses)
+
+정식 배포에는 승인된 코드 서명 인증서와 타임스탬프 서비스가 필요합니다. 신뢰된 Windows 릴리스 환경에서 electron-builder가 해당 서명 키를 사용할 수 있도록 설정합니다. Windows 인증서 저장소를 사용한다면 선택할 인증서의 SHA-1 지문을 `SUSPENSION_CERTIFICATE_SHA1`으로 지정합니다. 승인된 인증서의 DER SHA-256(16진수 64자리)을 `SUSPENSION_SIGNER_SHA256`으로 지정한 뒤 `npm run package:desktop:signed`를 실행합니다. 앱 EXE와 설치 파일 모두에 대해 Windows가 유효하다고 판정한 타임스탬프 서명과 인증서 SHA-256을 확인한 후 `release/windows-signed/`에 게시합니다. [electron-builder Windows 서명 설정](https://www.electron.build/v26/docs/features/code-signing/code-signing-win/)
+
+웹 ZIP은 `npm run build` 이후 `npm run package:release`로 생성합니다. ZIP의 `start.cmd`는 Windows 기본 Node.js 설치 경로를 사용합니다. Node.js를 다른 위치에 설치한 경우 신뢰할 수 있는 터미널에서 `node serve.mjs`를 실행하고 안내된 주소를 엽니다.
 
 ```text
 npm test

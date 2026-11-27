@@ -100,12 +100,21 @@ export function initProduct({getConfig,setConfig,setRunning,getScene,notify}) {
   $('#experiment-list')?.before(recoveryPanel);
   function renderRecoveries(){
     const entries=library.getRecoveries();recoveryPanel.hidden=!entries.length;
-    recoveryPanel.innerHTML=entries.length?`<strong>이전 저장 원문 보관</strong><p>새 작업과 따로 보관합니다. 원문 내려받기는 파일 내용을 바꾸지 않습니다. 읽을 수 있는 사본만 복구할 수 있습니다.</p>${entries.map(entry=>`<div><p>${escape(entry.modelVersion||'버전 확인 불가')} · ${escape(recoveryReasons[entry.reason]||'저장 공간을 확인하지 못했습니다. 원문은 보관합니다.')} ${entry.persisted?'백업 확인됨.':'원문 별도 저장 권장.'}</p><div class="experiment-card-actions"><button class="button button-small button-quiet" data-recovery-action="export" data-recovery-id="${escape(entry.id)}">원문 내려받기</button>${entry.restorable?`<button class="button button-small button-quiet" data-recovery-action="restore" data-recovery-id="${escape(entry.id)}">보관 기록 복구</button>`:''}</div></div>`).join('')}`:'';
+    recoveryPanel.innerHTML=entries.length?`<strong>이전 저장 원문 보관</strong><p>새 작업과 따로 보관합니다. 원문 내려받기는 파일 내용을 바꾸지 않습니다. 필요한 사본은 내려받은 뒤 삭제할 수 있습니다.</p>${entries.map(entry=>`<div><p>${escape(entry.modelVersion||'버전 확인 불가')} · ${escape(recoveryReasons[entry.reason]||'저장 공간을 확인하지 못했습니다. 원문은 보관합니다.')} ${entry.persisted?'백업 확인됨.':'원문 별도 저장 권장.'}</p><div class="experiment-card-actions"><button class="button button-small button-quiet" data-recovery-action="export" data-recovery-id="${escape(entry.id)}">원문 내려받기</button>${entry.restorable!==false?`<button class="button button-small button-quiet" data-recovery-action="restore" data-recovery-id="${escape(entry.id)}">보관 기록 복구</button>`:''}${entry.persisted?`<button class="button button-small button-quiet" data-recovery-action="delete" data-recovery-id="${escape(entry.id)}">사본 삭제</button>`:''}</div></div>`).join('')}`:'';
   }
   recoveryPanel.addEventListener('click',async event=>{
     const button=event.target.closest('[data-recovery-action]');if(!button||isBusy()||fileOperation)return;
     const id=button.dataset.recoveryId;
-    if(button.dataset.recoveryAction==='export'){try{download(library.exportRecovery(id),`suspension-original-${id.slice(0,12)}.json`,'application/json');}catch(error){notify(error.message,true);}return;}
+    const action=button.dataset.recoveryAction;
+    if(action==='export'||action==='delete'){
+      if(action==='delete'&&!confirm('원문 사본을 삭제할까요? 필요한 사본은 먼저 내려받으세요. 기존 프로젝트와 작업 기록은 유지됩니다.'))return;
+      setMutationBusy(true);
+      try {
+        if(action==='export')download(await library.exportRecovery(id),'suspension-original-'+id.slice(0,12)+'.json','application/json');
+        else { await library.deleteRecovery(id); renderRecoveries(); notify('복구 사본을 삭제했습니다.'); }
+      } catch(error) { notify(error.message,true); } finally { setMutationBusy(false); }
+      return;
+    }
     if(!confirm('현재 보관함을 원문 사본의 기록으로 교체할까요? 현재 작업은 프로젝트 파일로 먼저 저장하세요. 이전 모델 기록은 읽기 전용으로 열립니다.'))return;
     setMutationBusy(true);try{const result=await library.restoreRecovery(id);persistence(result);if(result.config){setRunning(false);setConfig(result.config);}if(result.name){projectName=cleanName(result.name);if(projectInput)projectInput.value=projectName;storeName();}selected=library.list().slice(0,3).map(run=>run.id);lastSweep=null;renderRecords();renderSweep();if(result.persisted)notify('원문 사본에서 보관 기록을 복구했습니다. 원문은 그대로 유지됩니다.');}catch(error){notify(`복구 실패: ${error.message}`,true);}finally{setMutationBusy(false);}
   });

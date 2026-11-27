@@ -1,3 +1,4 @@
+import { parseBoundedJSON } from './project-input.js';
 import { SuspensionSimulation } from './physics.js';
 import { linearQuarterCarProperties, runBenchmarkSuite, parseMeasurementCSV, compareMeasurement } from './engineering.js';
 import { validateComponentProfile, COMPONENT_PROFILE_TEMPLATE } from './component-curves.js';
@@ -55,7 +56,7 @@ export function initEngineering({getConfig,setConfig,getMetrics,getRun,notify}){
     }catch(error){notify(`대조 실패: ${error.message}`,true);throw error;}
   }
   async function importProfile(file){
-    try{if(file.size>2*1024*1024)throw new Error('부품 곡선 JSON은 2MB 이하여야 합니다.');const profile=validateComponentProfile(JSON.parse(await file.text())),candidate={...getConfig(),componentProfile:profile};new SuspensionSimulation(candidate);setConfig(candidate);update();notify('부품 특성표를 해석에 적용하고 정적 평형을 다시 맞췄습니다.');return profile;}catch(error){notify(`부품 특성표 입력 실패: ${error.message}`,true);throw error;}
+    try{if(file.size>2*1024*1024)throw new Error('부품 곡선 JSON은 2MB 이하여야 합니다.');const profile=validateComponentProfile(parseBoundedJSON(await file.text(), { maxBytes: 2 * 1024 * 1024 })),candidate={...getConfig(),componentProfile:profile};new SuspensionSimulation(candidate);setConfig(candidate);update();notify('부품 특성표를 해석에 적용하고 정적 평형을 다시 맞췄습니다.');return profile;}catch(error){notify(`부품 특성표 입력 실패: ${error.message}`,true);throw error;}
   }
   $('#measurement-import-btn')?.addEventListener('click',()=>$('#measurement-file').click());
   $('#measurement-file')?.addEventListener('change',e=>{const file=e.target.files?.[0];if(file)void importMeasurement(file).catch(()=>{});e.target.value='';});
