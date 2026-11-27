@@ -16,13 +16,16 @@ async function readBounded(handle, limit) {
   throw new Error('프로젝트 파일은 32 MiB 이하여야 합니다.');
 }
 
+function sameFile(first, second) {
+  return first && second && first.dev === second.dev && first.ino === second.ino;
+}
+
 async function openProjectFile(target, stat, recheck, limit) {
   const handle = await fsp.open(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
   try {
     const opened = await handle.stat();
     const current = await recheck(target);
-    const sameFile = expected => opened.dev === expected.dev && opened.ino === expected.ino;
-    if (!opened.isFile() || opened.size > limit || !sameFile(stat) || !sameFile(current)) {
+    if (!opened.isFile() || opened.size > limit || !sameFile(opened, stat) || !sameFile(opened, current)) {
       throw new Error('프로젝트 파일이 변경되었습니다. 다시 선택해 주세요.');
     }
     return await readBounded(handle, limit);
@@ -32,7 +35,7 @@ async function openProjectFile(target, stat, recheck, limit) {
 }
 
 async function saveProjectFile(target, contents, recheck, temporary = target + '.' + randomUUID() + '.tmp') {
-  await recheck(target, true);
+  const previous = await recheck(target, true);
   const handle = await fsp.open(temporary, 'wx', 0o600);
   let published = false;
   try {
@@ -41,7 +44,10 @@ async function saveProjectFile(target, contents, recheck, temporary = target + '
     } finally {
       await handle.close();
     }
-    await recheck(target, true);
+    const current = await recheck(target, true);
+    if (previous !== current && !sameFile(previous, current)) {
+      throw new Error('저장 대상 파일이 변경되었습니다. 경로를 다시 선택해 주세요.');
+    }
     await fsp.rename(temporary, target);
     published = true;
   } finally {

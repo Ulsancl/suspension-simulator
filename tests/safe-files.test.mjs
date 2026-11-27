@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,4 +32,14 @@ test('artifacts replace regular files atomically and directory publication keeps
   fs.mkdirSync(destination); fs.writeFileSync(path.join(destination, 'app'), 'old');
   publishDirectory(root, source, destination);
   assert.equal(readInput(root, path.join(destination, 'app')).toString(), 'new');
+});
+
+test('signed packaging stops before any build when the approved publisher fingerprint is absent', () => {
+  const env = { ...process.env };
+  delete env.SUSPENSION_SIGNER_SHA256;
+  const script = fileURLToPath(new URL('../scripts/desktop.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [script, 'package-signed'], { env, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Signed packaging requires Windows and SUSPENSION_SIGNER_SHA256/);
+  assert.doesNotMatch(result.stdout, /building|Installer:/);
 });

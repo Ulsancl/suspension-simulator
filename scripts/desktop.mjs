@@ -14,9 +14,11 @@ if (!['start', 'package', 'package-test', 'package-signed'].includes(mode)) thro
 const signed = mode === 'package-signed';
 const inspector = mode === 'package-test';
 const signerHash = process.env.SUSPENSION_SIGNER_SHA256;
+const storeCertificate = process.env.SUSPENSION_CERTIFICATE_SHA1;
 if (signed && (process.platform !== 'win32' || !/^[a-f0-9]{64}$/i.test(signerHash || ''))) {
   throw new Error('Signed packaging requires Windows and SUSPENSION_SIGNER_SHA256 for the approved certificate');
 }
+if (signed && storeCertificate && !/^[a-f0-9]{40}$/i.test(storeCertificate)) throw new Error('Invalid Windows store certificate identifier');
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 if (!signed) env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
@@ -33,10 +35,11 @@ await run(process.execPath, [path.join(path.dirname(require.resolve('electron/pa
 await run(process.execPath, [path.join(root, 'scripts', 'build-web.mjs')]);
 if (mode === 'start') await run(require('electron'), [root]);
 else {
-  const stage = stagingDirectory(root), app = path.join(stage, 'app'), output = path.join(stage, 'windows');
   const configuration = JSON.parse(readInput(root, path.join(root, 'electron-builder.json')));
   const destination = path.join(root, 'release', signed ? 'windows-signed' : inspector ? 'windows-test' : 'windows');
   const packageInfo = JSON.parse(readInput(root, path.join(root, 'package.json')));
+  const stage = stagingDirectory(root), app = path.join(stage, 'app'), output = path.join(stage, 'windows');
+  const configPath = path.join(stage, 'electron-builder.json');
   try {
     const inputs = [...new Set(['desktop', 'dist', 'package.json', ...configuration.extraResources.map(item => item.from)])];
     for (const input of inputs.filter(file => !inputs.some(parent => file !== parent && file.startsWith(parent + '/')))) {
@@ -47,13 +50,17 @@ else {
     }
     const electronDist = checkedPath(root, path.join(root, 'node_modules', 'electron', 'dist'));
     checkTree(root, electronDist);
-    const flags = signed ? ['--config.forceCodeSigning=true'] : ['--config.win.signExecutable=false'];
-    if (inspector) flags.push('--config.electronFuses.enableNodeCliInspectArguments=true');
+    configuration.forceCodeSigning = signed;
+    if (signed && storeCertificate) configuration.win.signtoolOptions = { certificateSha1: storeCertificate };
+    if (!signed) configuration.win.signExecutable = false;
+    configuration.electronFuses.enableNodeCliInspectArguments = inspector;
+    configuration.directories.output = output;
+    configuration.electronDist = electronDist;
+    configuration.npmRebuild = false;
+    fs.writeFileSync(configPath, JSON.stringify(configuration), { flag: 'wx', mode: 0o600 });
     await run(process.execPath, [
       path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js'),
-      '--win', 'nsis', '--x64', '--config', path.join(root, 'electron-builder.json'), '--projectDir', app,
-      '--config.electronDist=' + electronDist, '--config.directories.output=' + output,
-      '--config.npmRebuild=false', '--publish', 'never', ...flags,
+      '--win', 'nsis', '--x64', '--config', configPath, '--projectDir', app, '--publish', 'never',
     ]);
     const executable = path.join(output, 'win-unpacked', 'Suspension Lab.exe');
     const installer = path.join(output, 'Suspension-Lab-Setup-' + packageInfo.version + '.exe');

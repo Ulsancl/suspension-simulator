@@ -545,10 +545,15 @@ export class ExperimentLibrary {
     if (this._recoveries.some(entry => entry.id === id)) return;
     // This is only a copy of a file the user already has. Bound pending copies too.
     if (sourceKey === 'project-import' && this._recoveries.some(entry => !entry.persisted && entry.sourceKey === sourceKey)) return;
+    let schemaVersion = restorable ? EXPERIMENT_SCHEMA_VERSION : null;
     if (modelVersion === undefined) {
-      try { modelVersion = parseInput(text)?.modelVersion; } catch {}
+      try {
+        const data = parseInput(text);
+        modelVersion = data?.modelVersion;
+        schemaVersion = data?.schemaVersion;
+      } catch {}
     }
-    const metadata = recoveryMetadata({ id, reason, modelVersion, restorable });
+    const metadata = recoveryMetadata({ id, reason, modelVersion, schemaVersion, restorable });
     const entry = { ...metadata, format: RECOVERY_FORMAT, sourceKey, raw: text, persisted: false };
     this._recoveries.push(entry);
   }

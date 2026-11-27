@@ -49,7 +49,7 @@ server.listen(port, '127.0.0.1', () => {
     }
     const command = windows ? path.join(systemRoot, 'System32', 'rundll32.exe') : process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open';
     const args = process.platform === 'win32' ? [path.join(systemRoot, 'System32', 'url.dll') + ',FileProtocolHandler', url] : [url];
-    const child = spawn(command, args, { stdio: 'ignore', windowsHide: true });
+    const child = spawn(command, args, { cwd: windows ? path.join(systemRoot, 'System32') : undefined, stdio: 'ignore', windowsHide: true });
     child.on('error', () => console.error(`Open ${url} manually.`));
     child.unref();
   }

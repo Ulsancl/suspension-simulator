@@ -75,7 +75,7 @@ npm run package:desktop
 
 이 명령은 로컬 검증용 미서명 설치 파일과 체크섬을 `release/windows/`에 만듭니다. `npm run package:desktop:test`는 Playwright의 메인 프로세스 검사를 위해 Node Inspector를 허용하며 결과를 `release/windows-test/`에 둡니다. CI는 두 구성의 Electron Fuses를 확인하고 테스트용 설치 파일을 아티팩트로 게시하지 않습니다. [Electron Fuses](https://www.electronjs.org/docs/latest/tutorial/fuses)
 
-정식 배포에는 승인된 코드 서명 인증서와 타임스탬프 서비스가 필요합니다. 신뢰된 Windows 릴리스 환경에서 electron-builder가 해당 서명 키를 사용할 수 있도록 설정하고, 승인된 인증서의 DER SHA-256(16진수 64자리)을 `SUSPENSION_SIGNER_SHA256`으로 지정한 뒤 `npm run package:desktop:signed`를 실행합니다. 앱 EXE와 설치 파일 모두에 대해 Windows가 유효하다고 판정한 타임스탬프 서명과 인증서 SHA-256을 확인한 후 `release/windows-signed/`에 게시합니다. [electron-builder Windows 서명 설정](https://www.electron.build/v26/docs/features/code-signing/code-signing-win/)
+정식 배포에는 승인된 코드 서명 인증서와 타임스탬프 서비스가 필요합니다. 신뢰된 Windows 릴리스 환경에서 electron-builder가 해당 서명 키를 사용할 수 있도록 설정합니다. Windows 인증서 저장소를 사용한다면 선택할 인증서의 SHA-1 지문을 `SUSPENSION_CERTIFICATE_SHA1`으로 지정합니다. 승인된 인증서의 DER SHA-256(16진수 64자리)을 `SUSPENSION_SIGNER_SHA256`으로 지정한 뒤 `npm run package:desktop:signed`를 실행합니다. 앱 EXE와 설치 파일 모두에 대해 Windows가 유효하다고 판정한 타임스탬프 서명과 인증서 SHA-256을 확인한 후 `release/windows-signed/`에 게시합니다. [electron-builder Windows 서명 설정](https://www.electron.build/v26/docs/features/code-signing/code-signing-win/)
 
 웹 ZIP은 `npm run build` 이후 `npm run package:release`로 생성합니다. ZIP의 `start.cmd`는 Windows 기본 Node.js 설치 경로를 사용합니다. Node.js를 다른 위치에 설치한 경우 신뢰할 수 있는 터미널에서 `node serve.mjs`를 실행하고 안내된 주소를 엽니다.
 
