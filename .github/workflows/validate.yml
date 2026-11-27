@@ -38,7 +38,9 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked dependencies and runtimes
         run: |
-          npm ci
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node node_modules/esbuild/install.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npx --no-install playwright install chromium
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -53,14 +55,18 @@ jobs:
       - name: Verify source desktop app
         timeout-minutes: 10
         run: npm run test:desktop
-      - name: Package Windows installer
-        run: npm run package:desktop
+      - name: Package inspector-enabled desktop test build
+        run: npm run package:desktop:test
       - name: Verify independent desktop executable
         timeout-minutes: 10
         run: |
-          $env:SUSPENSION_DESKTOP_EXE = Join-Path $env:GITHUB_WORKSPACE 'release/windows/win-unpacked/Suspension Lab.exe'
+          $env:SUSPENSION_DESKTOP_EXE = Join-Path $env:GITHUB_WORKSPACE 'release/windows-test/win-unpacked/Suspension Lab.exe'
           node tests/desktop.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package hardened Windows installer
+        run: npm run package:desktop
+      - name: Verify hardened desktop executable launches
+        run: node scripts/verify-windows-launch.mjs
       - name: Verify installer checksum and notices
         run: |
           $taskVersion = (Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json).version
@@ -70,16 +76,6 @@ jobs:
           foreach ($taskNotice in @('LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources/THREE-LICENSE.txt', 'resources/docs/THIRD-PARTY-NOTICES.md')) {
             if (-not (Test-Path -LiteralPath (Join-Path 'release/windows/win-unpacked' $taskNotice))) { throw "Missing notice: $taskNotice" }
           }
-      - name: Retain tested installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: suspension-lab-windows-${{ github.sha }}
-          path: |
-            release/windows/Suspension-Lab-Setup-*.exe
-            release/windows/Suspension-Lab-Setup-*.exe.sha256
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
       - name: Retain desktop verification diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell, scr
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { openProjectFile, saveProjectFile } = require('./project-files.cjs');
 const { normalizeWindowState } = require('./window-state.cjs');
 
 const APP_URL = 'app://suspension/';
@@ -10,6 +11,15 @@ const { MAX_PROJECT_BYTES, checkProjectJSON } = require('./project-input.cjs');
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.txt': 'text/plain; charset=utf-8' };
 let mainWindow, calculationBusy = false, nativeBusy = 0, closePrompt = false;
 const downloads = new Set();
+
+function allowedRequest(url) { return trustedURL(url) || url.startsWith('blob:') || url.startsWith('data:'); }
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const checkNavigation = event => { if (!trustedURL(event.url)) event.preventDefault(); };
+  for (const name of ['will-navigate', 'will-frame-navigate', 'will-redirect']) contents.on(name, checkNavigation);
+  contents.on('will-attach-webview', event => event.preventDefault());
+});
 
 app.setName(APP_NAME);
 // Keep the data directory and origin stable when a new version is installed.
@@ -97,16 +107,7 @@ function registerFileActions() {
       if (result.canceled || !result.filePaths[0]) return { canceled: true };
       const target = result.filePaths[0], stat = await projectTarget(target);
       if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 32 MiB 이하인 JSON 파일이어야 합니다.');
-      const handle = await fsp.open(target, 'r');
-      let bytes;
-      try {
-        const opened = await handle.stat();
-        if (!opened.isFile() || opened.size > MAX_PROJECT_BYTES || opened.dev !== stat.dev || opened.ino !== stat.ino) {
-          throw new Error('프로젝트 파일이 변경되었습니다. 다시 선택해 주세요.');
-        }
-        bytes = await handle.readFile();
-      } finally { await handle.close(); }
-      if (bytes.byteLength > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 32 MiB 이하여야 합니다.');
+      const bytes = await openProjectFile(target, stat, projectTarget, MAX_PROJECT_BYTES);
       return { canceled: false, content: projectText(bytes.toString('utf8')), path: target };
     } finally { nativeBusy--; }
   });
@@ -115,19 +116,13 @@ function registerFileActions() {
     if (nativeBusy) return { canceled: true };
     if (!payload || typeof payload !== 'object') throw new Error('프로젝트 파일 내용을 확인해 주세요.');
     nativeBusy++;
-    let temporary;
     try {
       const contents = projectText(payload.contents);
       const result = await dialog.showSaveDialog(mainWindow, { title: '서스펜션 프로젝트 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(payload.name)), filters: [{ name: '서스펜션 프로젝트', extensions: ['json'] }] });
       if (result.canceled || !result.filePath) return { canceled: true };
-      await projectTarget(result.filePath, true);
-      temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`;
-      await fsp.writeFile(temporary, contents, { encoding: 'utf8', flag: 'wx' });
-      await fsp.rename(temporary, result.filePath);
-      temporary = null;
+      await saveProjectFile(result.filePath, contents, projectTarget);
       return { canceled: false, path: result.filePath };
     } finally {
-      if (temporary) await fsp.unlink(temporary).catch(() => {});
       nativeBusy--;
     }
   });
@@ -161,8 +156,6 @@ function createWindow() {
     title: APP_NAME, show: false, backgroundColor: '#14191e', icon: path.join(__dirname, 'assets', 'app.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
   });
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  mainWindow.webContents.on('will-navigate', (event, url) => { if (!trustedURL(url)) event.preventDefault(); });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     calculationBusy = false;
     log(`Renderer ended: ${details.reason}`);
@@ -174,6 +167,7 @@ function createWindow() {
     dialog.showErrorBox(APP_NAME, '프로그램 파일을 읽지 못했습니다. 설치 파일로 다시 설치해 주세요.');
     app.quit();
   });
+  mainWindow.webContents.once('did-finish-load', () => log('Application loaded'));
   mainWindow.once('ready-to-show', () => { if (maximized) mainWindow.maximize(); mainWindow.show(); });
   mainWindow.on('close', event => {
     if (calculationBusy || nativeBusy || downloads.size) {
@@ -196,10 +190,15 @@ else {
   app.whenReady().then(async () => {
     protocol.handle('app', serveBundle);
     // All application content ships in the installer, including the first launch.
-    session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => callback({ cancel: true }));
+    session.defaultSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !allowedRequest(details.url) }));
+    session.defaultSession.setPermissionCheckHandler(() => false);
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     session.defaultSession.on('will-download', (_event, item, contents) => {
-      if (!mainWindow || contents !== mainWindow.webContents) { item.cancel(); return; }
+      if (!mainWindow || contents !== mainWindow.webContents ||
+          !/^(blob|data):/.test(item.getURL()) || item.getURLChain().some(url => !allowedRequest(url))) {
+        item.cancel();
+        return;
+      }
       downloads.add(item);
       item.setSaveDialogOptions({ title: '결과 파일 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(item.getFilename())) });
       item.once('done', (_event, state) => {

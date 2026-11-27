@@ -123,7 +123,7 @@ try {
     const library = new ExperimentLibrary(options), initial = await library.ready();
     const current = runExperiment({}, { duration: 1 }); const saved = await library.save(current);
     const restarted = new ExperimentLibrary(options); await restarted.ready();
-    return { initial, saved, original: localStorage.getItem(key), raw, count: restarted.list().length, oldVersion: restarted.get(previous.id).modelVersion, recovery: restarted.exportRecovery(restarted.getRecoveries()[0].id) };
+    return { initial, saved, original: localStorage.getItem(key), raw, count: restarted.list().length, oldVersion: restarted.get(previous.id).modelVersion, recovery: await restarted.exportRecovery(restarted.getRecoveries()[0].id) };
   });
   assert.equal(fallback.initial.persistence, 'localStorage'); assert.equal(fallback.initial.fallbackReason, 'storage-unavailable');
   assert.equal(fallback.saved.persisted, true); assert.equal(fallback.count, 2);

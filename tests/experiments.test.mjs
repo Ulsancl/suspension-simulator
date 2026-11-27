@@ -7,7 +7,7 @@ import { runExperiment, runExperimentAsync, runDampingSweep, validateDuration, v
 const immediate = async () => {};
 const makeStorage = () => {
   const values = new Map();
-  return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), values };
+  return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key), values };
 };
 const fixture = () => runExperiment({ singleEvent: true }, { duration: 1, name: '범프 시험' });
 
@@ -254,7 +254,7 @@ test('past model opens read-only with original samples and KPIs; new save/relaun
   assert.equal(JSON.parse(storage.getItem(branchKey)).runs.length, 2);
   assert.deepEqual(library.get(past.id), past);
   const recovery = library.getRecoveries()[0]; assert.equal(recovery.persisted, true);
-  assert.equal(recovery.restorable, true); assert.equal(sha256(library.exportRecovery(recovery.id)), originalHash);
+  assert.equal(recovery.restorable, true); assert.equal(sha256(await library.exportRecovery(recovery.id)), originalHash);
   const restarted = new ExperimentLibrary({ storage }); await restarted.ready();
   assert.deepEqual(restarted.get(past.id), past); assert.deepEqual(restarted.get(current.id), current);
   assert.equal(restarted.getRecoveries().length, 1);
@@ -266,8 +266,8 @@ test('past model opens read-only with original samples and KPIs; new save/relaun
   await restarted.clear();
   const afterClear = new ExperimentLibrary({ storage }); await afterClear.ready();
   assert.deepEqual(afterClear.list(), []);
-  assert.equal(sha256(afterClear.exportRecovery(recovery.id)), originalHash);
-  assert.deepEqual(validateExperiment(JSON.parse(afterClear.exportRecovery(recovery.id)).runs[0]), past);
+  assert.equal(sha256(await afterClear.exportRecovery(recovery.id)), originalHash);
+  assert.deepEqual(validateExperiment(JSON.parse(await afterClear.exportRecovery(recovery.id)).runs[0]), past);
 });
 
 test('future schema, future model, unknown model and corrupt raw get distinct reasons and survive new saved work', async () => {
@@ -284,9 +284,9 @@ test('future schema, future model, unknown model and corrupt raw get distinct re
     assert.equal((await library.save(fixture())).persisted, true);
     assert.equal(storage.getItem(libraryKey), raw);
     const recovery = library.getRecoveries()[0];
-    assert.equal(library.exportRecovery(recovery.id), raw);
+    assert.equal(await library.exportRecovery(recovery.id), raw);
     const restarted = new ExperimentLibrary({ storage }); await restarted.ready();
-    assert.equal(restarted.list().length, 1); assert.equal(restarted.exportRecovery(recovery.id), raw);
+    assert.equal(restarted.list().length, 1); assert.equal(await restarted.exportRecovery(recovery.id), raw);
     const before = restarted.list(); await assert.rejects(() => restarted.restoreRecovery(recovery.id));
     assert.deepEqual(restarted.list(), before);
   }
@@ -298,6 +298,7 @@ test('backup write and read verification failures never replace source or write 
     const storage = makeStorage(); storage.values.set(libraryKey, raw);
     let fail = true;
     const adapter = {
+      removeItem: storage.removeItem,
       getItem(key) { const value = storage.getItem(key); return fail && failure === 'wrong-copy' && key.startsWith(`${libraryKey}:recovery:`) && value != null ? JSON.stringify({ format: 'suspension-lab-recovery/v1', raw: 'altered' }) : value; },
       setItem(key, value) {
         if (fail && (failure === 'quota' || (failure === 'index-write' && key.endsWith(':recovery-index:v1')))) { const error = new Error('Quota exceeded'); error.name = 'QuotaExceededError'; throw error; }
@@ -310,7 +311,7 @@ test('backup write and read verification failures never replace source or write 
     assert.equal(storage.getItem(libraryKey), raw); assert.equal(storage.getItem(branchKey), null);
     assert.deepEqual(library.get(current.id), current);
     assert.equal(library.exportProject(DEFAULT_CONFIG).runs.length, 2);
-    assert.equal(library.exportRecovery(library.getRecoveries()[0].id), raw);
+    assert.equal(await library.exportRecovery(library.getRecoveries()[0].id), raw);
     fail = false;
     assert.equal((await library.save(current)).persisted, true);
     assert.equal(storage.getItem(libraryKey), raw);
@@ -324,7 +325,7 @@ test('unsupported working branch and storage read failures stay memory-only with
   const library = new ExperimentLibrary({ storage }); await library.ready();
   assert.equal((await library.save(fixture())).reason, 'recovery-required');
   assert.equal(storage.getItem(libraryKey), original); assert.equal(storage.getItem(branchKey), damaged);
-  assert.ok(library.getRecoveries().some(entry => library.exportRecovery(entry.id) === damaged));
+  assert.ok((await Promise.all(library.getRecoveries().map(entry => library.exportRecovery(entry.id)))).includes(damaged));
   let writes = 0;
   const failedRead = new ExperimentLibrary({ storage: { getItem: () => { throw new Error('Read unavailable'); }, setItem: () => { writes++; } } });
   assert.equal((await failedRead.ready()).ok, false);
@@ -338,13 +339,57 @@ test('legacy project imports retain exact raw separately and reject future proje
   const raw = JSON.stringify({ type: 'suspension-lab-project', schemaVersion: 1, modelVersion: past.modelVersion, name: '이전 프로젝트', exportedAt: past.createdAt, config: past.config, runs: [past] }, null, 2) + '\n';
   assert.equal((await library.importProject(raw)).persisted, true);
   assert.deepEqual(library.get(past.id), past);
-  assert.ok(library.getRecoveries().some(entry => library.exportRecovery(entry.id) === raw && entry.persisted));
+  assert.equal(library.getRecoveries()[0].persisted, true);
+  assert.equal(await library.exportRecovery(library.getRecoveries()[0].id), raw);
   const future = '{"type":"suspension-lab-project", "schemaVersion":99, "modelVersion":"quarter-car-10.0"}\n';
   await assert.rejects(() => library.importProject(future), error => error.reason === 'unsupported-schema');
   assert.deepEqual(library.list(), [past]);
-  assert.ok(library.getRecoveries().some(entry => library.exportRecovery(entry.id) === future));
+  assert.equal(library.getRecoveries().length, 1);
   await library.save(current);
   const reloaded = new ExperimentLibrary({ storage }); await reloaded.ready();
   assert.deepEqual(reloaded.get(past.id), past); assert.deepEqual(reloaded.get(current.id), current);
-  assert.ok(reloaded.getRecoveries().some(entry => reloaded.exportRecovery(entry.id) === future));
+  assert.equal(reloaded.getRecoveries().length, 1);
+  assert.equal(await reloaded.exportRecovery(reloaded.getRecoveries()[0].id), raw);
+});
+
+test('older recovery index loads metadata only and handles each copy separately', async () => {
+  const storage = makeStorage();
+  const indexKey = libraryKey + ':recovery-index:v1';
+  const goodRaw = JSON.stringify({ schemaVersion: 1, modelVersion: 'quarter-car-1.2', runs: [historicalFixture()] });
+  const goodId = sha256(goodRaw), badId = sha256('missing copy');
+  const key = id => libraryKey + ':recovery:' + id;
+  storage.setItem(indexKey, JSON.stringify({ format: 'suspension-lab-recovery-index/v1', keys: [key(badId), key(goodId)] }));
+  storage.setItem(key(goodId), JSON.stringify({ format: 'suspension-lab-recovery/v1', id: goodId, raw: goodRaw, modelVersion: { text: 'invalid metadata' } }));
+  const readKeys = [];
+  const library = new ExperimentLibrary({ storage: { ...storage, getItem(name) { readKeys.push(name); return storage.getItem(name); } } });
+  assert.equal((await library.ready()).ok, true);
+  for (let i = 0; i < 3; i++) assert.equal(library.getRecoveries().length, 2);
+  assert.ok(!readKeys.includes(key(goodId)) && !readKeys.includes(key(badId)));
+  await assert.rejects(library.exportRecovery(badId), /복구 사본/);
+  assert.equal(await library.exportRecovery(goodId), goodRaw);
+  await library.deleteRecovery(badId);
+  assert.equal((await library.restoreRecovery(goodId)).persisted, true);
+  assert.equal(library.getRecoveries().length, 1);
+  await library.deleteRecovery(goodId);
+  assert.equal(storage.getItem(key(goodId)), null);
+  assert.equal(library.list().length, 1);
+});
+
+test('recovery metadata remains displayable and the aggregate limit preserves saved work', async () => {
+  const storage = makeStorage(), indexKey = libraryKey + ':recovery-index:v1';
+  const id = sha256('existing copy'), key = libraryKey + ':recovery:' + id;
+  const raw = JSON.stringify({ schemaVersion: 1, modelVersion: { name: 'non-string' }, runs: [] });
+  storage.setItem(libraryKey, raw);
+  storage.setItem(indexKey, JSON.stringify({
+    format: 'suspension-lab-recovery-index/v1', keys: [key],
+    entries: [{ id, modelVersion: { name: 'non-string' }, bytes: 64 * 1024 * 1024 }],
+  }));
+  const library = new ExperimentLibrary({ storage });
+  assert.equal((await library.ready()).reason, 'unknown-model');
+  assert.ok(library.getRecoveries().every(entry => entry.modelVersion === null));
+  assert.equal((await library.save(fixture())).persisted, true);
+  assert.equal(JSON.parse(storage.getItem(indexKey)).keys.length, 1);
+  assert.equal(storage.getItem(libraryKey), raw);
+  const source = library.getRecoveries().find(entry => entry.sourceOnly);
+  assert.equal(await library.exportRecovery(source.id), raw);
 });
