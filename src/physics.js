@@ -9,7 +9,7 @@ import { validateComponentProfile, createCurveModel } from './component-curves.j
 
 export const DEFAULT_CONFIG = Object.freeze({
   structure: 'wishbone', springType: 'coil', holderMode: 'fixed', road: 'bump',
-  speed: 30, roadHeight: 0.06, roadWidth: 1, roadSpacing: 6,
+  speed: 30, roadHeight: 0.06, roadWidth: 1, roadSpacing: 6, roadLeadIn: 0, roadRepeatCount: 0,
   springRate: 32000, compressionDamping: 1800, reboundDamping: 2800,
   sprungMass: 320, unsprungMass: 45, tireRate: 220000, tireDamping: 250,
   travelBump: 0.11, travelRebound: 0.10, motionRatio: 0.85,
@@ -28,6 +28,7 @@ const mod = (x, n) => ((x % n) + n) % n;
 
 const RANGES = {
   speed: [0, 160], roadHeight: [0, 0.25], roadWidth: [0.08, 6], roadSpacing: [1, 40],
+  roadLeadIn: [0, 20], roadRepeatCount: [0, 12],
   springRate: [4000, 160000], compressionDamping: [0, 16000], reboundDamping: [0, 20000],
   sprungMass: [80, 1200], unsprungMass: [15, 180], tireRate: [50000, 800000],
   tireDamping: [0, 2000], travelBump: [0.02, 0.25], travelRebound: [0.02, 0.25],
@@ -50,6 +51,8 @@ export function normalizeConfig(input = {}) {
   }
   // A quiet interval separates each obstacle, including the tyre's footprint.
   config.roadSpacing = Math.max(config.roadSpacing, config.roadWidth + 2 * config.tireRadius + 0.1);
+  config.roadLeadIn = Math.round(config.roadLeadIn * 10) / 10;
+  config.roadRepeatCount = Math.round(config.roadRepeatCount);
   config.singleEvent = input.singleEvent === true;
   config.autoMotionRatio = input.autoMotionRatio !== false;
   config.componentProfile = validateComponentProfile(input.componentProfile);
@@ -60,7 +63,15 @@ function profileType(index, config) {
   return config.road === 'mixed' ? ['bump', 'step', 'pothole', 'bump'][mod(index, 4)] : config.road;
 }
 
-/** Raw road surface. The first obstacle is centred at 0.55 * roadSpacing. */
+const obstacleCenter = (index, spacing) => (index + 0.55) * spacing;
+const washboardStart = spacing => spacing * 0.35;
+
+function roadEventCount(config) {
+  if (config.singleEvent) return config.road === 'washboard' ? 3 : 1;
+  return config.roadRepeatCount ?? 0;
+}
+
+/** Raw road surface. A lead-in translates the excitation along the road. */
 export function roadHeight(x, input = DEFAULT_CONFIG) {
   const config = input;
   const type = config.road ?? DEFAULT_CONFIG.road;
@@ -68,20 +79,33 @@ export function roadHeight(x, input = DEFAULT_CONFIG) {
   const height = config.roadHeight ?? DEFAULT_CONFIG.roadHeight;
   const width = Math.max(0.08, config.roadWidth ?? DEFAULT_CONFIG.roadWidth);
   const spacing = Math.max(width + 0.1, config.roadSpacing ?? DEFAULT_CONFIG.roadSpacing);
+  const leadIn = config.roadLeadIn ?? 0;
+  const count = roadEventCount(config);
+  const position = x - leadIn;
   if (type === 'washboard') {
-    const start = spacing * 0.35;
-    if (x < start || (config.singleEvent && x > start + 3 * width)) return 0;
-    return height * 0.5 * (1 - Math.cos(TAU * (x - start) / width));
+    const phaseDistance = position - washboardStart(spacing);
+    if (phaseDistance < 0 || (count > 0 && phaseDistance > count * width)) return 0;
+    return height * 0.5 * (1 - Math.cos(TAU * phaseDistance / width));
   }
-  const index = Math.floor((x - 0.55 * spacing) / spacing + 0.5);
-  if (config.singleEvent && index !== 0) return 0;
-  const center = (index + 0.55) * spacing;
-  const delta = x - center;
+  const index = Math.floor((position - obstacleCenter(0, spacing)) / spacing + 0.5);
+  if ((leadIn > 0 || count > 0) && index < 0) return 0;
+  if (count > 0 && index >= count) return 0;
+  const delta = position - obstacleCenter(index, spacing);
   if (Math.abs(delta) > width / 2) return 0;
   const shape = profileType(index, config);
   if (shape === 'step') return height;
   if (shape === 'pothole') return -height;
   return height * 0.5 * (1 + Math.cos(TAU * delta / width));
+}
+
+/** End of a finite input, including tyre clearance, for a normalized configuration. */
+export function roadEventEndDistance(config) {
+  const count = roadEventCount(config);
+  if (!count || config.road === 'flat' || config.roadHeight === 0) return null;
+  const profileEnd = config.road === 'washboard'
+    ? washboardStart(config.roadSpacing) + count * config.roadWidth
+    : obstacleCenter(count - 1, config.roadSpacing) + config.roadWidth / 2;
+  return (config.roadLeadIn ?? DEFAULT_CONFIG.roadLeadIn) + profileEnd + config.tireRadius;
 }
 
 /**
@@ -102,9 +126,9 @@ function roadEnvelope(x, config) {
   for (let i = 0; i <= samples; i++) evaluate(-r + 2 * r * i / samples);
   if (config.road === 'step' || config.road === 'pothole' || config.road === 'mixed') {
     const spacing = config.roadSpacing;
-    const base = Math.floor(x / spacing);
+    const base = Math.floor((x - config.roadLeadIn) / spacing);
     for (let i = base - 1; i <= base + 1; i++) {
-      const center = (i + 0.55) * spacing;
+      const center = config.roadLeadIn + obstacleCenter(i, spacing);
       for (const edge of [center - config.roadWidth / 2, center + config.roadWidth / 2]) {
         evaluate(edge - x - 1e-7);
         evaluate(edge - x + 1e-7);

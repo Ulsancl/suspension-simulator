@@ -155,7 +155,7 @@ export function wishboneWeb(parent, mats) {
   }};
 }
 
-export function springAssembly(parent, mats, springType, integrated = false) {
+export function springAssembly(parent, mats, springType, integrated = false, neutralLength) {
   const group = new THREE.Group(); group.name = springType === 'air' ? 'air-bellows-damper' : integrated ? 'integrated-macpherson-strut' : 'coilover'; parent.add(group);
   const classified = [], sections = [], radius = integrated ? .043 : .031, bore = radius - .005;
   const classify = (mesh, category, visible = true) => {
@@ -173,9 +173,14 @@ export function springAssembly(parent, mats, springType, integrated = false) {
   const body = annulus('hollow-damper-envelope', bore, radius, 1, [mats.red,mats.metal,mats.chrome], 'damper', true);
   const piston = classify(cylinder(group, .013, 1, mats.chrome), 'damper'); piston.name = 'sliding-chrome-rod';
   const head = annulus('representative-piston-head', .013, bore - .0005, .014, mats.brass, 'damper');
+  const wearBands = [-.0048, .0048].map(offset => ({ offset,
+    mesh: annulus('piston-wear-band', bore - .0014, bore - .00016, .0028, mats.darkMetal, 'damper'),
+  }));
   const gland = annulus('machined-rod-guide', .0132, radius, .013, mats.chrome, 'damper', true);
   const seal = annulus('rod-wiper-seal', .013, .020, .004, mats.rubber, 'damper', true);
   const baseCap = classify(cylinder(group, bore, .008, mats.darkMetal), 'damper'); baseCap.name = 'damper-base-cap';
+  const baseWeld = annulus('damper-base-retaining-ring', radius - .001, radius + .0022, .008, mats.darkMetal, 'damper', true);
+  const glandCollar = annulus('damper-guide-locknut', radius - .001, radius + .0035, .009, mats.darkMetal, 'damper', true);
   const bootProfile = [];
   for (let i = 0; i <= 24; i++) bootProfile.push([i % 4 === 0 ? .019 : .024, -.5 + i / 24]);
   bootProfile.push([.014, .5], [.014, -.5]);
@@ -186,6 +191,15 @@ export function springAssembly(parent, mats, springType, integrated = false) {
   const upperEye = classify(bearing(group, [0, 0, 0], mats, integrated ? 1.05 : .74, 'x'), 'damper');
   const upperSeat = annulus('upper-annular-spring-seat', .025, .071, .019, mats.darkMetal, 'spring', false, springType !== 'air');
   const lowerSeat = annulus('lower-annular-spring-seat', radius + .0005, .074, .022, mats.metal, 'spring', false, springType !== 'air');
+  const upperLip = annulus('upper-seat-retaining-lip', .0656, .071, .011, mats.metal, 'spring', false, springType !== 'air');
+  const lowerLip = annulus('lower-seat-retaining-lip', .0656, .074, .012, mats.darkMetal, 'spring', false, springType !== 'air');
+  const upperIsolator = annulus('upper-spring-seat-isolator', .025, .047, .007, mats.rubber, 'spring', false, springType !== 'air');
+  const threadPoints = Array.from({ length: 125 }, (_, i) => {
+    const t = i / 124, angle = t * TAU * 9;
+    return new THREE.Vector3((radius + .0013) * Math.cos(angle), (t - .5) * .033, (radius + .0013) * Math.sin(angle));
+  });
+  const thread = classify(part(group, new THREE.TubeGeometry(new THREE.CatmullRomCurve3(threadPoints), 144, .00065, 5), mats.chrome), 'spring', springType !== 'air');
+  thread.name = 'rolled-preload-thread';
   const adjusters = [0, 1].map((_, i) => annulus(`threaded-preload-collar-${i + 1}`, radius + .0005, .052, .011, mats.brass, 'spring', false, springType !== 'air'));
   for (const adjuster of adjusters) for (let i = 0; i < 12; i++) {
     const a = i * TAU / 12, mark = block(adjuster, [.002, .005, .003], [.052 * Math.cos(a), 0, .052 * Math.sin(a)], mats.darkMetal, .0003); mark.rotation.y = -a;
@@ -199,10 +213,17 @@ export function springAssembly(parent, mats, springType, integrated = false) {
   const bagSection = part(group, revolvedProfile(bagProfile, 64, true), mats.rubber); bagSection.name = 'air-bellows-section'; bagSection.userData.presentationOnly = true; bagSection.visible = false;
   sections.push({ mesh: bag, cut: bagSection, category: 'spring' });
   const airCaps = [0, 1].map(i => annulus(`air-bellows-end-cap-${i}`, i ? .013 : radius, .079, .021, mats.metal, 'spring', false, springType === 'air'));
+  const crimps = [0, 1].map(() => annulus('air-bellows-crimp-ring', .065, .078, .009, mats.darkMetal, 'spring', false, springType === 'air'));
   const reservoir = classify(cylinder(group, .019, .18, mats.darkMetal, [.090, 0, 0]), 'damper', !integrated);
   reservoir.name = 'remote-reservoir';
   const reservoirCap = classify(cylinder(group, .021, .017, mats.brass, [.090, .089, 0]), 'damper', !integrated);
   reservoirCap.name = 'reservoir-end-cap';
+  const reservoirClamps = [-.053, .049].map(offset => {
+    const clamp = new THREE.Group(); clamp.name = 'reservoir-support-clamp'; group.add(clamp); classify(clamp, 'damper', !integrated);
+    part(clamp, annularGeometry(.0185, .022, .011), mats.metal, [.090, 0, 0]);
+    block(clamp, [.056, .011, .023], [.053, 0, 0], mats.darkMetal, .003);
+    return { clamp, offset };
+  });
   // Open-ended hose with fittings; fluid paths inside the housings are not solved.
   const hoseCurve = new THREE.CatmullRomCurve3([new THREE.Vector3(radius, 0, 0), new THREE.Vector3(.065, -.034, 0), new THREE.Vector3(.112, -.028, 0), new THREE.Vector3(.109, .03, 0)]);
   const hose = classify(part(group, new THREE.TubeGeometry(hoseCurve, 32, .004, 8, false), mats.rubber), 'damper', !integrated); hose.name = 'reservoir-connecting-hose';
@@ -229,22 +250,32 @@ export function springAssembly(parent, mats, springType, integrated = false) {
   }
   return { group, coilGeometry, setInspection(id) { inspection = id; applyInspection(); }, update(a, b) {
     const length = align(group, b, a), minY = -length / 2, maxY = length / 2;
-    const bodyLength = length * .43;
-    body.scale.y = bodyLength; body.position.y = minY + length * .25;
-    head.position.y = minY + length * (.035 + .43 * .55);
+    const bodyLength = length * .43, bodyBottom = minY + length * .035;
+    body.scale.y = bodyLength; body.position.y = bodyBottom + bodyLength / 2;
+    const extension = (length - (neutralLength ?? length)) * .42;
+    head.position.y = bodyBottom + THREE.MathUtils.clamp(bodyLength * .55 + extension, .020, bodyLength - .023);
+    wearBands.forEach(({mesh, offset}) => { mesh.position.y = head.position.y + offset; });
     const rodBottom = head.position.y - .007, rodTop = minY + length * .95;
     piston.scale.y = rodTop - rodBottom; piston.position.y = (rodTop + rodBottom) / 2;
     gland.position.y = minY + length * .465 - .0065; seal.position.y = minY + length * .465 + .002;
-    baseCap.position.y = minY + length * .035 + .004;
+    baseCap.position.y = bodyBottom + .004;
+    baseWeld.position.y = baseCap.position.y;
+    glandCollar.position.y = gland.position.y - .006;
     dustBoot.scale.y = length * .16; dustBoot.position.y = minY + length * .66;
     lowerEye.position.y = minY; upperEye.position.y = maxY;
     layout = springLayout(length, springType, integrated);
     upperSeat.position.y = layout.upperSeatYM; lowerSeat.position.y = layout.lowerSeatYM;
+    upperLip.position.y = layout.upperSeatYM - SPRING_DETAIL.upperSeatThicknessM / 2 - .003;
+    lowerLip.position.y = layout.lowerSeatYM + SPRING_DETAIL.lowerSeatThicknessM / 2 + .003;
+    upperIsolator.position.y = layout.upperSeatYM + SPRING_DETAIL.upperSeatThicknessM / 2 + .003;
+    thread.position.y = layout.lowerSeatYM - .028;
     adjusters.forEach((adjuster, i) => { adjuster.position.y = layout.lowerSeatYM - .017 - i * .014; });
     const springLength = layout.upperSeatYM - layout.lowerSeatYM;
     bag.scale.y = springLength - .021; bag.position.y = (layout.lowerSeatYM + layout.upperSeatYM) / 2;
     airCaps[0].position.y = layout.lowerSeatYM; airCaps[1].position.y = layout.upperSeatYM;
+    crimps[0].position.y = layout.lowerSeatYM + .013; crimps[1].position.y = layout.upperSeatYM - .013;
     reservoir.position.y = minY + length * .32; reservoirCap.position.y = reservoir.position.y + .095; hose.position.y = reservoir.position.y - .078;
+    reservoirClamps.forEach(({clamp, offset}) => { clamp.position.y = reservoir.position.y + offset; });
     hoseFittings.forEach(fitting=>{fitting.position.y=hose.position.y+fitting.userData.offsetYM;});
     topPlate.position.y = maxY - .015; topRubber.position.y = maxY - .045; studs.forEach(stud => { stud.position.y = maxY + .012; });
     if (springType !== 'air' && Math.abs(lastLength - length) > .000002) {
@@ -270,20 +301,22 @@ export function springAssembly(parent, mats, springType, integrated = false) {
         lowerContactYM: springType==='air'?null:coilGeometry.boundingBox?.min.y, upperContactYM: springType==='air'?null:coilGeometry.boundingBox?.max.y, lowerBoreRadiusM: radius + .0005, upperBoreRadiusM: .025 },
       damper: { bodyLengthM: body.scale.y, bodyBoreRadiusM: bore, rodRadiusM: .013, guideBoreRadiusM: .0132, pistonRadiusM: bore - .0005,
         pistonYM: head.position.y, guideYM: gland.position.y, bodyBottomYM: body.position.y - body.scale.y / 2, bodyTopYM: body.position.y + body.scale.y / 2,
-        variableEnvelope: true, hydraulicCircuitSolved: false },
+        variableEnvelope: true, hydraulicCircuitSolved: false, representativeRodStroke: true },
       visibleMeshes: group.children.filter(o => o.visible).map(o => o.name), cutaway: sections.some(({cut})=>cut.visible) ? 'closed half-section; internal parts retain full dimensions' : null };
   }};
 }
 
 export function annotation(text, color = '#bcd0df') {
-  const canvas = document.createElement('canvas'); canvas.width = 768; canvas.height = 96;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = 'rgba(12,21,31,.80)'; ctx.beginPath(); ctx.roundRect(0, 9, 760, 76, 8); ctx.fill();
-  ctx.fillStyle = color; ctx.fillRect(0, 9, 5, 76);
-  ctx.font = '600 43px "Segoe UI", sans-serif'; ctx.fillText(text, 24, 62);
+  const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
+  const font = '600 54px "맑은 고딕", "Segoe UI", sans-serif';
+  ctx.font = font;
+  canvas.width = Math.ceil(ctx.measureText(text).width + 55); canvas.height = 96;
+  ctx.fillStyle = 'rgba(12,21,31,.90)'; ctx.beginPath(); ctx.roundRect(0, 6, canvas.width, 84, 8); ctx.fill();
+  ctx.fillStyle = color; ctx.fillRect(0, 9, 6, 78);
+  ctx.font = font; ctx.textBaseline = 'middle'; ctx.fillText(text, 24, 48);
   const map = new THREE.CanvasTexture(canvas); map.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.SpriteMaterial({ map, depthTest: false, transparent: true }); material.userData.owned = true;
-  const sprite = new THREE.Sprite(material); sprite.scale.set(.66, .0825, 1); sprite.renderOrder = 5; return sprite;
+  const sprite = new THREE.Sprite(material); sprite.scale.set(.109 * canvas.width / canvas.height, .109, 1); sprite.renderOrder = 5; return sprite;
 }
 
 export function sidewallTexture(radius) {
@@ -291,7 +324,7 @@ export function sidewallTexture(radius) {
   const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, 1024, 1024);
   ctx.translate(512, 512); ctx.fillStyle = '#687078';
   const writeArc = (text, centerAngle, r, size) => {
-    ctx.font = `600 ${size}px "Segoe UI", sans-serif`;
+    ctx.font = `600 ${size}px "맑은 고딕", "Segoe UI", sans-serif`;
     const total = [...text].reduce((n, letter) => n + ctx.measureText(letter).width + 4, 0), start = centerAngle - total / (2 * r);
     let current = start;
     for (const letter of text) {
@@ -299,8 +332,8 @@ export function sidewallTexture(radius) {
       ctx.save(); ctx.rotate(current); ctx.translate(0, -r); ctx.textAlign = 'center'; ctx.fillText(letter, 0, 0); ctx.restore(); current += width / (2 * r);
     }
   };
-  writeArc('SUSPENSION LAB', 0, 405, 32);
-  writeArc(`DIAMETER ${Math.round(radius * 2000)} mm   •   TEST RADIAL`, Math.PI, 402, 22);
+  writeArc('시험용 래디얼', 0, 405, 32);
+  writeArc(`외경 ${Math.round(radius * 2000)} mm`, Math.PI, 402, 27);
   ctx.strokeStyle = '#343a42'; ctx.lineWidth = 1.4;
   for (const r of [360, 436, 445]) { ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke(); }
   for (let i = 0; i < 240; i++) {

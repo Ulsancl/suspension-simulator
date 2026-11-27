@@ -7,7 +7,8 @@ import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { getGeometry, roadHeight } from './physics.js';
-import { part, block, cylinder, ring, align, vector, destroy, consolidate, fastener, bearing, adjustableRod, armLimb, wishboneWeb, springAssembly, annotation, sidewallTexture } from './rig-parts.js';
+import { part, block, cylinder, ring, align, vector, destroy, consolidate, fastener, bearing, adjustableRod, armLimb, wishboneWeb, springAssembly, annotation } from './rig-parts.js';
+import { buildTire } from './tire-visual.js';
 
 const TAU = Math.PI * 2;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -17,8 +18,8 @@ const MATERIALS = {
   chrome: new THREE.MeshStandardMaterial({ color: 0xc6d4df, metalness: .96, roughness: .19 }),
   darkMetal: new THREE.MeshStandardMaterial({ color: 0x29313b, metalness: .84, roughness: .33 }),
   red: new THREE.MeshPhysicalMaterial({ color: 0x9f211b, metalness: .58, roughness: .30, clearcoat: .45, clearcoatRoughness: .23 }),
-  rubber: new THREE.MeshStandardMaterial({ color: 0x15191e, metalness: 0, roughness: .86 }),
-  tread: new THREE.MeshStandardMaterial({ color: 0x20252b, metalness: 0, roughness: .83 }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0x1b2024, metalness: 0, roughness: .89 }),
+  tread: new THREE.MeshStandardMaterial({ color: 0x272b2e, metalness: 0, roughness: .90 }),
   teal: new THREE.MeshStandardMaterial({ color: 0x37978c, metalness: .76, roughness: .33 }),
   brass: new THREE.MeshStandardMaterial({ color: 0xae8949, metalness: .80, roughness: .3 }),
   spring: new THREE.MeshPhysicalMaterial({ color: 0x465463, metalness: .85, roughness: .22, clearcoat: .25 }),
@@ -55,15 +56,22 @@ function studioEnvironment(renderer) {
   softbox([-.4, 1.8, 4.8], [2.3, 2.8, .1], 0xd1dfeb, 1.3);
   softbox([1, 3.2, -4.8], [3.3, .35, .1], 0xaed0ed, 3.8);
   softbox([-3.5, 2.8, -4.2], [2.8, 3.6, .1], 0xe5eef5, 3.4);
-  const pmrem = new THREE.PMREMGenerator(renderer), environment = pmrem.fromScene(room, .045, .1, 20);
+  const pmrem = new THREE.PMREMGenerator(renderer), environment = pmrem.fromScene(room, .038, .1, 20);
   geometries.forEach(g => g.dispose()); materials.forEach(m => m.dispose()); pmrem.dispose(); return environment;
 }
 
 function contactTexture() {
   const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
-  const ctx = canvas.getContext('2d'), gradient = ctx.createRadialGradient(128, 128, 10, 128, 128, 122);
-  gradient.addColorStop(0, 'rgba(0,0,0,.64)'); gradient.addColorStop(.38, 'rgba(0,0,0,.24)'); gradient.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gradient; ctx.fillRect(0, 0, 256, 256); return new THREE.CanvasTexture(canvas);
+  const ctx = canvas.getContext('2d'), gradient = ctx.createRadialGradient(128, 128, 15, 128, 128, 125);
+  gradient.addColorStop(0, 'rgba(0,16,15,.7)'); gradient.addColorStop(.53, 'rgba(15,109,92,.30)'); gradient.addColorStop(1, 'rgba(35,193,160,0)');
+  ctx.fillStyle = gradient; ctx.fillRect(0, 0, 256, 256);
+  ctx.strokeStyle = '#75e0c5'; ctx.lineWidth = 5; ctx.lineJoin = 'round';
+  for (const side of [-1, 1]) {
+    const y = 128 + side * 103;
+    ctx.beginPath(); ctx.moveTo(38, y - side * 16); ctx.lineTo(38, y); ctx.lineTo(218, y); ctx.lineTo(218, y - side * 16); ctx.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
 }
 
 class ModelSSAOPass extends SSAOPass {
@@ -120,6 +128,7 @@ export class SuspensionScene {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.info.autoReset = false;
     this.renderer.domElement.setAttribute('aria-label', '정밀 서스펜션 시험 장치 3D 뷰. 드래그로 회전, 휠로 확대합니다.');
+    this.renderer.domElement.setAttribute('aria-description', '타이어 변형과 청록색 접지 표시는 모형 표현입니다. 힘 벡터는 표시용 축척입니다.');
     container.appendChild(this.renderer.domElement);
     this.camera = new THREE.PerspectiveCamera(34, 1, .025, 25);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -146,10 +155,14 @@ export class SuspensionScene {
     this.mats = Object.fromEntries(Object.entries(MATERIALS).map(([key, mat]) => [key, mat.clone()]));
     this.mats.metal.bumpMap = this.surfaceTextures[0]; this.mats.metal.bumpScale = .00032;
     this.mats.rubber.bumpMap = this.surfaceTextures[1]; this.mats.rubber.bumpScale = .00075;
+    this.mats.tread.bumpMap = this.surfaceTextures[1]; this.mats.tread.bumpScale = .00045;
     this.mats.chrome.userData.darkMaterial = this.mats.darkMetal;
     this.buildTreadmill();
-    const contactMaterial = new THREE.MeshBasicMaterial({ map: contactTexture(), transparent: true, depthWrite: false, opacity: .38 }); contactMaterial.userData.owned = true;
-    this.contactShadow = part(this.scene, new THREE.PlaneGeometry(.62, .32), contactMaterial); this.contactShadow.rotation.x = -Math.PI / 2; this.contactShadow.castShadow = false; this.contactShadow.receiveShadow = false; this.contactShadow.renderOrder = 1;
+    const contactMaterial = new THREE.MeshBasicMaterial({ map: contactTexture(), transparent: true, depthWrite: false, opacity: .38, toneMapped: false }); contactMaterial.userData.owned = true;
+    const contactGeometry = new THREE.PlaneGeometry(1, 1, 22, 1).rotateX(-Math.PI / 2);
+    contactGeometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
+    this.contactShadow = part(this.scene, contactGeometry, contactMaterial); this.contactShadow.name = 'representative-load-footprint';
+    this.contactShadow.castShadow = false; this.contactShadow.receiveShadow = false; this.contactShadow.frustumCulled = false; this.contactShadow.renderOrder = 1; this.contactShadow.visible = false;
     this.rig = new THREE.Group(); this.rig.name = 'wheel-and-fixture'; this.scene.add(this.rig);
     this.linkGroup = new THREE.Group(); this.linkGroup.name = 'suspension-assembly'; this.scene.add(this.linkGroup);
     this.labelGroup = new THREE.Group(); this.scene.add(this.labelGroup);
@@ -165,9 +178,10 @@ export class SuspensionScene {
 
   buildTreadmill() {
     const mats = this.mats, base = new THREE.Group(); this.testBench = base; base.name = 'moving-road-dynamometer'; this.scene.add(base);
-    block(base, [7.45, .15, 1.34], [0, -.235, 0], mats.painted, .025);
-    block(base, [7.30, .055, 1.23], [0, -.137, 0], mats.darkMetal, .010);
+    // Recess the lower deck below the deepest modeled road profile.
+    block(base, [7.45, .085, 1.34], [0, -.332, 0], mats.painted, .025);
     for (const z of [-.684, .684]) {
+      block(base, [7.30, .215, .102], [0, -.183, z], mats.painted, .010);
       rail(base, 7.50, [0, -.085, z], mats, 'x', .08);
       block(base, [7.50, .039, .09], [0, -.036, z], mats.metal, .007);
       block(base, [7.40, .006, .042], [0, -.011, z], mats.darkMetal, .002);
@@ -180,6 +194,23 @@ export class SuspensionScene {
         const foot = cylinder(base, .085, .025, mats.rubber, [x, -.374, z]); foot.name = 'vibration-isolating-foot';
       }
     }
+    // The wheel rides over a supported span between the two conveyor drums.
+    // The visible ribs, bearing plates and cable conduit belong to that load frame.
+    for (const x of [-.48, -.24, 0, .24, .48]) {
+      rail(base, 1.34, [x, -.290, 0], mats, 'z', .061);
+      for (const z of [-.718, .718]) {
+        block(base, [.145, .114, .023], [x, -.135, z], mats.darkMetal, .007);
+        for (const dx of [-.047, .047]) fastener(base, [x + dx, -.119, z + Math.sign(z) * .015], mats.metal, .008, 'z');
+      }
+    }
+    for (const x of [-.76, .76]) {
+      block(base, [.37, .132, .028], [x, -.183, .692], mats.painted, .012);
+      for (const dx of [-.13, .13]) fastener(base, [x + dx, -.183, .712], mats.metal, .010, 'z');
+      for (let i = 0; i < 7; i++) block(base, [.012, .051, .005], [x + (i - 3) * .024, -.183, .71], mats.darkMetal, .002);
+    }
+    const conduit = new THREE.CatmullRomCurve3([[.38,-.09,-.73],[.54,-.17,-.77],[1.05,-.23,-.77],[2.43,-.23,-.77],[3.02,-.20,-.86]].map(vector));
+    part(base, new THREE.TubeGeometry(conduit, 40, .013, 8), mats.rubber);
+    for (const x of [1.15, 1.48, 1.81, 2.14]) block(base, [.027, .036, .033], [x, -.23, -.769], mats.metal, .005);
     this.rollers = [];
     for (const x of [-3.60, 3.60]) {
       const roller = cylinder(base, .116, 1.22, mats.darkMetal, [x, -.120, 0], 64); roller.rotation.x = Math.PI / 2; this.rollers.push(roller);
@@ -197,10 +228,15 @@ export class SuspensionScene {
     }
     consolidate(base, this.rollers);
     const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256; const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#282c30'; ctx.fillRect(0, 0, 256, 256);
-    for (let y = 0; y < 256; y += 8) { ctx.fillStyle = y % 16 === 0 ? '#32373b' : '#202529'; ctx.fillRect(0, y, 256, 3); }
-    ctx.fillStyle = '#12181d'; ctx.fillRect(0, 0, 5, 256); ctx.fillRect(128, 0, 4, 256);
-    ctx.fillStyle = '#43494d'; for (let x = 8; x < 256; x += 10) for (let y = 2; y < 256; y += 16) ctx.fillRect(x, y, 1, 4);
+    const image = ctx.createImageData(256, 256), pixels = image.data;
+    for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
+      const grain = ((x * 6551 + y * 4273) ^ (x * y * 151)) & 255;
+      const texture = 43 + (grain % 27) - (grain > 235 ? 34 : 0);
+      const i = (y * 256 + x) * 4;
+      pixels[i] = texture; pixels[i + 1] = texture + 2; pixels[i + 2] = texture + 3; pixels[i + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+    ctx.fillStyle = '#24292c'; ctx.fillRect(0, 0, 3, 256); ctx.fillRect(3, 5, 2, 246);
     this.beltTexture = new THREE.CanvasTexture(canvas); this.beltTexture.colorSpace = THREE.SRGBColorSpace; this.beltTexture.wrapS = this.beltTexture.wrapT = THREE.RepeatWrapping; this.beltTexture.repeat.set(26, 4);
     const roadMat = new THREE.MeshStandardMaterial({ map: this.beltTexture, bumpMap: this.beltTexture, bumpScale: .0013, roughness: .90, metalness: .08, side: THREE.DoubleSide });
     const sections = 720, geometry = new THREE.BufferGeometry(), positions = [], uvs = [], indices = [];
@@ -209,11 +245,11 @@ export class SuspensionScene {
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2)); geometry.setIndex(indices); geometry.computeVertexNormals();
     this.roadMesh = part(this.scene, geometry, roadMat); this.roadMesh.castShadow = false; this.roadMesh.name = 'raw-road-surface';
     const edgePositions = new Float32Array((sections + 1) * 2 * 3), edgeIndices = [];
-    for (let i = 0; i <= sections; i++) { edgePositions[i * 6] = -3.6 + 7.2 * i / sections; edgePositions[i * 6 + 2] = .616; edgePositions[i * 6 + 3] = edgePositions[i * 6]; edgePositions[i * 6 + 4] = -.145; edgePositions[i * 6 + 5] = .616; }
+    for (let i = 0; i <= sections; i++) { edgePositions[i * 6] = -3.6 + 7.2 * i / sections; edgePositions[i * 6 + 2] = .616; edgePositions[i * 6 + 3] = edgePositions[i * 6]; edgePositions[i * 6 + 4] = -.267; edgePositions[i * 6 + 5] = .616; }
     for (let i = 0; i < sections; i++) { const n = i * 2; edgeIndices.push(n, n + 2, n + 1, n + 1, n + 2, n + 3); }
     const edgeGeo = new THREE.BufferGeometry(); edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3)); edgeGeo.setIndex(edgeIndices); edgeGeo.computeVertexNormals();
     this.beltEdge = part(this.scene, edgeGeo, mats.rubber); this.beltEdge.castShadow = false;
-    this.beltMark = annotation('MOVING ROAD  /  DYNAMOMETER', '#aab9c8'); this.beltMark.position.set(.20, .12, .40); this.beltMark.scale.multiplyScalar(.68); this.scene.add(this.beltMark);
+    this.beltMark = annotation('접지 자국 · 모형', '#86c7b7'); this.beltMark.position.set(.20, .12, .40); this.beltMark.scale.multiplyScalar(.90); this.scene.add(this.beltMark);
   }
 
   buildHolder(geom, config) {
@@ -251,7 +287,7 @@ export class SuspensionScene {
       for (const dx of [-.042, .042]) block(mount, [.014, .088, .085], [dx, .020, 0], mats.metal, .004);
       bearing(mount, [0, 0, 0], mats, .88);
     }
-    this.holderLabel = annotation(config.holderMode === 'fixed' ? '01   FIXED TEST FIXTURE' : '01   SPRUNG MASS FIXTURE');
+    this.holderLabel = annotation(config.holderMode === 'fixed' ? '고정 홀더' : '가동 질량 홀더');
     this.holderLabel.position.set(-.06, this.holderHeight, -1.08); this.labelGroup.add(this.holderLabel);
     consolidate(this.holder);
   }
@@ -260,20 +296,7 @@ export class SuspensionScene {
     const mats = this.mats, r = config.tireRadius;
     this.wheel = new THREE.Group(); this.wheel.name = 'wheel-and-brake'; this.rig.add(this.wheel);
     this.spin = new THREE.Group(); this.spin.name = 'rotating-alloy-wheel'; this.wheel.add(this.spin);
-    const profile = [[.61,-.101],[.62,-.113],[.68,-.122],[.79,-.125],[.88,-.119],[.94,-.107],[.982,-.086],[.997,-.061],[1,-.031],[1,.031],[.997,.061],[.982,.086],[.94,.107],[.88,.119],[.79,.125],[.68,.122],[.62,.113],[.61,.101]].map(([rad,z]) => new THREE.Vector2(rad * r,z));
-    const tire = part(this.spin, new THREE.LatheGeometry(profile, 128), mats.rubber); tire.rotation.x = Math.PI / 2; tire.name = 'curved-shoulder-radial-tire';
-    const treadGeo = new THREE.BoxGeometry(.024, .0038, .043), tread = new THREE.InstancedMesh(treadGeo, mats.tread, 384), temp = new THREE.Object3D();
-    let index = 0;
-    for (let i = 0; i < 96; i++) for (let row = 0; row < 4; row++) {
-      const z = (row - 1.5) * .046, angle = i * TAU / 96 + (row % 2) * .009, radius = r * (Math.abs(z) > .05 ? .994 : 1.001);
-      temp.position.set(Math.sin(angle) * radius, Math.cos(angle) * radius, z); temp.rotation.set(0, (row < 2 ? -1 : 1) * .24, -angle); temp.updateMatrix(); tread.setMatrixAt(index++, temp.matrix);
-    }
-    tread.castShadow = true; tread.receiveShadow = true; tread.name = '384-directional-tread-blocks'; this.spin.add(tread);
-    for (const z of [-.126, .126]) {
-      const map = sidewallTexture(r), material = new THREE.MeshStandardMaterial({ map, transparent: true, roughness: .85, polygonOffset: true, polygonOffsetFactor: -1 }); material.userData.owned = true;
-      const sidewall = part(this.spin, new THREE.RingGeometry(r * .68, r * .98, 128), material, [0,0,z]); sidewall.name = 'embossed-sidewall-lettering'; sidewall.castShadow = false; if (z < 0) sidewall.rotation.y = Math.PI;
-      for (const ratio of [.646,.685,.945]) ring(this.spin, r * ratio, .0018, mats.tread, [0,0,z * .948]);
-    }
+    this.tire = buildTire(this.spin, r, mats);
     const barrelProfile = [[r*.585,-.09],[r*.62,-.09],[r*.626,-.076],[r*.609,-.058],[r*.604,.065],[r*.626,.091],[r*.622,.107],[r*.590,.107]].map(([rad,z])=>new THREE.Vector2(rad,z));
     const barrel = part(this.spin, new THREE.LatheGeometry(barrelProfile, 96), mats.darkMetal); barrel.rotation.x = Math.PI / 2; barrel.name = 'alloy-rim-barrel';
     for (const z of [-.084,.104]) { ring(this.spin,r*.617,.0065,mats.chrome,[0,0,z],96); ring(this.spin,r*.587,.003,mats.metal,[0,0,z],96); }
@@ -288,13 +311,13 @@ export class SuspensionScene {
     for(let i=0;i<5;i++) { const a=i*TAU/5; fastener(this.spin,[Math.sin(a)*r*.121,Math.cos(a)*r*.121,.127],mats.chrome,.0095,'z'); }
     const valve=cylinder(this.spin,.004,.021,mats.rubber,[r*.52,0,.107],16); valve.rotation.z=Math.PI/2;
     brakeRotor(this.spin,r,mats);
-    consolidate(this.spin);
+    consolidate(this.spin, this.tire.meshes);
     const caliper=new THREE.Group(); this.wheel.add(caliper); caliper.position.set(-r*.39,r*.11,-.071); caliper.rotation.z=.27;
     block(caliper,[.061,.151,.085],[0,0,0],mats.red,.019);
     for(const y of [-.045,.045]) { block(caliper,[.074,.029,.095],[0,y,0],mats.red,.009); fastener(caliper,[.039,y,.044],mats.chrome,.006,'x'); }
     block(caliper,[.012,.091,.002],[.006,0,.049],mats.metal,.003); caliper.name='fixed-red-brake-caliper';
     consolidate(caliper);
-    this.hubLabel=annotation('04   TIRE / VENTED BRAKE', '#b8c4d4'); this.hubLabel.position.set(.45,.73,.14); this.hubLabel.scale.multiplyScalar(.88); this.labelGroup.add(this.hubLabel);
+    this.hubLabel=annotation('타이어 · 통풍 디스크', '#b8c4d4'); this.hubLabel.position.set(.45,.73,.14); this.hubLabel.scale.multiplyScalar(.94); this.labelGroup.add(this.hubLabel);
   }
 
   buildRig(config) {
@@ -329,10 +352,11 @@ export class SuspensionScene {
     const hubShell=cylinder(this.carrier,.049,.099,mats.darkMetal,[0,0,-.05],40); hubShell.rotation.x=Math.PI/2;
     this.axle=cylinder(this.linkGroup,.021,1,mats.chrome); this.axle.name='polished-hub-spindle';
     for(let i=0;i<4;i++) { const a=i*TAU/4; fastener(this.carrier,[Math.sin(a)*.054,Math.cos(a)*.054,-.078],mats.chrome,.008,'z'); }
-    this.spring=springAssembly(this.linkGroup,mats,config.springType,config.structure==='macpherson');
+    const neutralSpringLength=vector(geom.springTop).distanceTo(vector(geom.springBottom));
+    this.spring=springAssembly(this.linkGroup,mats,config.springType,config.structure==='macpherson',neutralSpringLength);
     this.components.push(config.springType==='air'?'five-convolution-air-bellows':config.springType==='progressive'?'variable-pitch-helical-coil':'helical-coilover', 'damper-piston-collars-eyelets');
-    this.linkLabel=annotation(config.structure==='wishbone'?'02   DOUBLE WISHBONE':config.structure==='multilink'?'02   FIVE LINK GEOMETRY':'02   MACPHERSON STRUT','#d5796e'); this.linkLabel.position.set(-.41,config.tireRadius+.12,-.39); this.linkLabel.scale.multiplyScalar(.88); this.labelGroup.add(this.linkLabel);
-    this.springLabel=annotation(config.springType==='air'?'03   AIR BELLOWS + DAMPER':config.springType==='progressive'?'03   VARIABLE PITCH COIL':config.structure==='macpherson'?'03   INTEGRATED STRUT':'03   COILOVER + RESERVOIR','#c8b590'); this.springLabel.position.set(.42,config.tireRadius+.78,-.58); this.springLabel.scale.multiplyScalar(.83); this.labelGroup.add(this.springLabel);
+    this.linkLabel=annotation(config.structure==='wishbone'?'더블 위시본':config.structure==='multilink'?'5링크 서스펜션':'맥퍼슨 스트럿','#d5796e'); this.linkLabel.position.set(-.41,config.tireRadius+.12,-.39); this.linkLabel.scale.multiplyScalar(.88); this.labelGroup.add(this.linkLabel);
+    this.springLabel=annotation(config.springType==='air'?'에어 벨로즈 · 댐퍼':config.springType==='progressive'?'가변 피치 코일':config.structure==='macpherson'?'일체형 스트럿':'코일오버 · 리저버','#c8b590'); this.springLabel.position.set(.42,config.tireRadius+.78,-.58); this.springLabel.scale.multiplyScalar(.83); this.labelGroup.add(this.springLabel);
     const lineMat=new THREE.LineBasicMaterial({color:0x8295a8,transparent:true,opacity:.35}); lineMat.userData.owned=true;
     this.labelLeaders=[];
     for(const [a,b] of [[[-.41,.43,-.39],[-.22,.31,-.54]],[[.42,1.09,-.58],[.07,.96,-.69]],[[.45,.69,.14],[.23,.55,.11]]]) {
@@ -354,7 +378,8 @@ export class SuspensionScene {
 
   setOptions(options) {
     this.options={...this.options,...options}; this.linkGroup.visible=this.options.links; this.forceGroup.visible=this.options.forces;
-    this.labelGroup.visible=this.options.labels && this.componentFocus==='all'; this.beltMark.visible=this.labelGroup.visible; this.dirty=true;
+    this.labelGroup.visible=this.options.labels && this.componentFocus==='all';
+    this.beltMark.visible=this.labelGroup.visible&&Boolean(this.lastState?.contact); this.dirty=true;
     this.applyInspectionVisibility();
   }
 
@@ -369,7 +394,7 @@ export class SuspensionScene {
     if (this.inspection?.id===id) return true;
     this.endInspection();
     const visibility=new Map();
-    for (const node of [this.rig,this.testBench,this.roadMesh,this.beltEdge,this.floor,this.grid,this.contactShadow,this.labelGroup,this.forceGroup,...this.linkGroup.children]) visibility.set(node,node.visible);
+    for (const node of [this.rig,this.testBench,this.roadMesh,this.beltEdge,this.floor,this.grid,this.contactShadow,this.beltMark,this.labelGroup,this.forceGroup,...this.linkGroup.children]) visibility.set(node,node.visible);
     this.inspection={id,camera:this.getCameraState(),visibility,center:null};
     this.cameraView='iso';
     this.applyInspectionVisibility(); this.fitInspection(); this.shadowsDirty=true; this.dirty=true; this.render(true); return true;
@@ -385,7 +410,7 @@ export class SuspensionScene {
     this.cameraView=saved.camera.view; this.camera.updateProjectionMatrix();
     this.controls.target.fromArray(saved.camera.target); this.controls.update(); this.controls.enableDamping=damping;
     this.grid.visible=this.studioMode==='technical';
-    this.contactShadow.visible=this.componentFocus!=='suspension'&&this.lastState?.contact!==false;
+    this.contactShadow.visible=this.componentFocus!=='suspension'&&Boolean(this.lastState?.contact);
     this.setOptions(this.options); this.shadowsDirty=true; this.dirty=true; this.render(true); return true;
   }
 
@@ -445,7 +470,7 @@ export class SuspensionScene {
     // Removing the wheel only in suspension inspection exposes the upright's
     // ball joints and all five rods without changing simulated geometry.
     this.wheel.visible=this.componentFocus!=='suspension';
-    this.contactShadow.visible=this.componentFocus!=='suspension'&&this.lastState?.contact!==false; this.shadowsDirty=true;
+    this.contactShadow.visible=this.componentFocus!=='suspension'&&Boolean(this.lastState?.contact); this.shadowsDirty=true;
     this.setOptions(this.options); this.fitComponent(); this.dirty=true; this.render(true);
     return this.componentFocus;
   }
@@ -491,7 +516,6 @@ export class SuspensionScene {
       this.keyLight.shadow.map?.dispose(); this.keyLight.shadow.map=null; this.keyLight.shadow.mapSize.set(shadowSize,shadowSize);
     }
     this.shadowsDirty=true;
-    this.contactShadow.material.opacity=this.quality==='standard'?.65:.24;
     if(ao) {
       const kernel=this.quality==='ultra'?32:16;
       if(!this.composer || this.aoKernel!==kernel) {
@@ -517,6 +541,7 @@ export class SuspensionScene {
     const tangent=Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)), height=this.container.clientHeight||640,width=this.container.clientWidth||800;
     const top=1-140/height,bottom=-1+100/height;
     for(const sprite of [this.holderLabel,this.linkLabel,this.springLabel,this.hubLabel,this.beltMark]) {
+      if(!sprite.visible) continue;
       const view=this.labelViewVector; sprite.getWorldPosition(view); view.applyMatrix4(this.camera.matrixWorldInverse);
       if(view.z>=0) continue;
       const original=sprite.userData.displayScale; if(original) sprite.scale.fromArray(original);
@@ -531,7 +556,7 @@ export class SuspensionScene {
 
   async exportGLB() {
     this.scene.updateMatrixWorld(true);
-    const exported=new THREE.Scene(); exported.name='Suspension Lab / current assembly';
+    const exported=new THREE.Scene(); exported.name='Suspension Simulator / current assembly';
     const datumOffset=(this.lastState?.bodyY||0)-(this.config.sprungMass+this.config.unsprungMass)*GRAVITY/this.config.tireRate;
     exported.userData={
       format:'suspension-lab/glb-v1',units:'m',unitSystem:'SI',quantityUnits:{length:'m',mass:'kg',time:'s',force:'N',springRate:'N/m',damping:'N s/m'},
@@ -539,11 +564,11 @@ export class SuspensionScene {
       configUnits:{speed:'km/h',airPressure:'bar gauge',airVolume:'L',tireRadius:'m',roadHeight:'m',roadWidth:'m',roadSpacing:'m',springRate:'N/m',compressionDamping:'N s/m',reboundDamping:'N s/m',airArea:'m^2',timeScale:'dimensionless',motionRatio:'dimensionless'},
       model:'Vertical quarter-car dynamics with illustrated suspension geometry',
       scope:'Current static display pose; no multibody solver, lateral compliance, stress analysis, or exported animation.',
-      geometryLimits:'Illustrative geometry, not a validated CAD assembly. Multilink rods use equivalent front-view closure; individual spatial link lengths are not constrained. Tire is a rigid visual surface with hub translation for equilibrium deflection.',
+      geometryLimits:'Illustrative geometry, not a validated CAD assembly. Multilink rods use equivalent front-view closure; individual spatial link lengths are not constrained. Tire carcass and treads show radial compression from the quarter-car state, with a 27% radius display cap and a representative footprint.',
       linkageDescription:this.lastGeometry?.description || '',
       kinematics:this.lastGeometry?{camberDegrees:this.lastGeometry.camber,toeDegrees:this.lastGeometry.toe,valid:this.lastGeometry.valid,displayDatumOffsetY:datumOffset,points:this.lastGeometry.points.map(point=>({id:point.id,kind:point.kind,positionMetres:point.position.map((value,axis)=>axis===1?value+datumOffset:value)})),links:this.lastGeometry.links.map(link=>({...link}))}:null,
       config:{...this.config},state:{...(this.lastState || {})},components:[...this.components],
-      presentation:{studioMode:this.studioMode,quality:this.quality,inspection:this.componentFocus},
+      presentation:{studioMode:this.studioMode,quality:this.quality,inspection:this.componentFocus,tire:{...this.tirePresentation},representativeRodStroke:true},
       exportIncludes:'Full selected assembly, moving-road surface and fixture; independent of inspection visibility.',
     };
     const geometryCopies=new Map(),materialCopies=new Map(),textureCopies=new Map();
@@ -598,6 +623,35 @@ export class SuspensionScene {
     this.dirty=true; this.render(true);
   }
 
+  updateContactPatch(state, config, hub, displayedCompression, supportX) {
+    this.contactShadow.visible=Boolean(state.contact)&&this.componentFocus!=='suspension';
+    this.beltMark.visible=this.labelGroup.visible&&Boolean(state.contact);
+    const radius=config.tireRadius;
+    const loadRatio=state.contactForce/((config.sprungMass+config.unsprungMass)*GRAVITY);
+    const length=2*Math.sqrt(displayedCompression*(2*radius-displayedCompression));
+    this.tirePresentation={
+      contact:state.contact, contactForceN:state.contactForce, compressionM:state.tireCompression,
+      displayedCompressionM:displayedCompression, footprintLengthM:state.contact?length:0,
+      footprintCenterXM:state.contact?supportX:null, effectiveRoadYM:state.roadY, rawRoadYM:state.rawRoadY,
+      footprintScale:'representative',
+    };
+    if (!state.contact) return;
+
+    const renderedLength=Math.max(.045,length), road=this.roadMesh.geometry.attributes.position;
+    const footprint=this.contactShadow.geometry.attributes.position;
+    const roadStart=road.getX(0), spacing=road.getX(2)-roadStart, lastSegment=road.count/2-2;
+    this.contactShadow.position.set(supportX, 0, hub[2]);
+    this.contactShadow.scale.set(renderedLength, 1, this.tire.widthM*1.5);
+    this.contactShadow.material.opacity=THREE.MathUtils.clamp(.25+.54*loadRatio,.25,.92);
+    // Interpolate the rendered belt so the marker follows grooves and steps.
+    for (let i=0;i<footprint.count;i++) {
+      const sample=(supportX+footprint.getX(i)*renderedLength-roadStart)/spacing;
+      const left=THREE.MathUtils.clamp(Math.floor(sample),0,lastSegment);
+      footprint.setY(i,THREE.MathUtils.lerp(road.getY(left*2),road.getY(left*2+2),sample-left)+.0022);
+    }
+    footprint.needsUpdate=true;
+  }
+
   update(state,config) {
     if(this.lastStateTime===state.time&&this.lastGeometry) { this.controls.update(); if(this.dirty) this.render(); return this.lastGeometry; }
     const firstPose=!this.lastGeometry; this.lastState={...state}; this.lastStateTime=state.time; const body=state.bodyY||0,geom=getGeometry(config,state.travel||0); this.lastGeometry=geom;
@@ -607,6 +661,7 @@ export class SuspensionScene {
     this.holder.position.y=body-tireDeflection; this.holderLabel.position.y=this.holderHeight+body-tireDeflection;
     const hub=point(geom.hub); this.wheel.position.set(...hub);
     this.wheel.rotation.set(THREE.MathUtils.degToRad(geom.camber||0),THREE.MathUtils.degToRad(geom.toe||0),0); this.spin.rotation.z=-state.distance/config.tireRadius;
+    const displayedCompression=this.tire.update(state);
     align(this.axle,[hub[0],hub[1],hub[2]-.25],hub,true);
     align(this.knuckle,points['lower-ball'],points['upper-ball']);
     const uprightLength=vector(points['upper-ball']).sub(vector(points['lower-ball'])).length();
@@ -620,13 +675,24 @@ export class SuspensionScene {
     this.linkLabel.position.y=config.tireRadius+.12+body-tireDeflection; this.springLabel.position.y=config.tireRadius+.78+body-tireDeflection; this.hubLabel.position.y=hub[1]+config.tireRadius*1.14;
     this.labelLeaders.forEach(line=>{line.position.y=body-tireDeflection;});
     const position=this.roadMesh.geometry.attributes.position,edge=this.beltEdge.geometry.attributes.position;
+    let supportX=hub[0], supportHeight=state.rawRoadY;
+    const radius=config.tireRadius;
     for(let i=0;i<position.count;i+=2) {
-      const height=roadHeight(position.getX(i)+state.distance,config); position.setY(i,height); position.setY(i+1,height); edge.setY(i,height-.002);
+      const x=position.getX(i), height=roadHeight(x+state.distance,config);
+      position.setY(i,height); position.setY(i+1,height); edge.setY(i,height-.002);
+      // Use the belt mesh to place a visual marker near the supporting ridge.
+      // Compression and force always come from the solver's effective envelope.
+      const dx=x-hub[0];
+      if(state.contact&&Math.abs(dx)<radius) {
+        const support=height+Math.sqrt(radius*radius-dx*dx)-radius;
+        if(support>supportHeight+1e-7) { supportHeight=support; supportX=x; }
+      }
     }
     position.needsUpdate=true; edge.needsUpdate=true; this.roadMesh.geometry.computeVertexNormals(); this.beltEdge.geometry.computeVertexNormals();
     this.beltTexture.offset.x=state.distance/7.2*26; this.rollers.forEach(roller=>{roller.rotation.y=state.distance/.116;});
-    this.contactShadow.position.set(hub[0],(state.rawRoadY||0)+.0015,hub[2]); this.contactShadow.visible=state.contact!==false&&this.componentFocus!=='suspension';
-    this.contactArrow.position.set(hub[0],state.rawRoadY||0,.23); this.contactArrow.setLength(Math.min(.85,Math.max(.02,state.contactForce/9000)),.055,.026);
+    this.updateContactPatch(state,config,hub,displayedCompression,supportX);
+    this.contactArrow.visible=Boolean(state.contact);
+    this.contactArrow.position.set(supportX,roadHeight(supportX+state.distance,config),hub[2]+this.tire.widthM*.72); this.contactArrow.setLength(Math.min(.85,Math.max(.02,state.contactForce/9000)),.055,.026);
     this.springArrow.position.set(...b); this.springArrow.setDirection(vector(a).sub(vector(b)).normalize()); this.springArrow.setLength(Math.min(.8,Math.max(.02,Math.abs(state.springForce)/7000)),.055,.026);
     if(this.inspection) {
       this.applyInspectionVisibility();
@@ -641,9 +707,9 @@ export class SuspensionScene {
   getDiagnostics() {
     const now=performance.now();
     const visible=node=>{ for(let current=node;current;current=current.parent) if(!current.visible) return false; return true; };
-    const actualVisible={wheel:visible(this.wheel),road:visible(this.roadMesh),fixture:visible(this.rig),floor:visible(this.floor),grid:visible(this.grid),labels:visible(this.labelGroup),forces:visible(this.forceGroup),links:visible(this.linkGroup),spring:visible(this.spring.group)};
+    const actualVisible={wheel:visible(this.wheel),road:visible(this.roadMesh),fixture:visible(this.rig),floor:visible(this.floor),grid:visible(this.grid),labels:visible(this.labelGroup),forces:visible(this.forceGroup),links:visible(this.linkGroup),spring:visible(this.spring.group),footprint:visible(this.contactShadow)};
     actualVisible.otherLinks=this.linkGroup.children.some(node=>node!==this.spring.group&&visible(node));
-    return { actualVisible,inspection:this.getInspection(),camera:this.getCameraState(),mechanical:this.spring.getDiagnostics(),structure:this.config.structure,springType:this.config.springType,quality:this.quality,studioMode:this.studioMode,componentFocus:this.componentFocus,components:[...this.components],triangles:this.renderer.info.render.triangles,draws:this.renderer.info.render.calls,geometries:this.renderer.info.memory.geometries,textures:this.renderer.info.memory.textures,coilBufferVertices:this.spring.coilGeometry.attributes.position.count,pixelRatio:this.renderer.getPixelRatio(),canvas:{width:this.renderer.domElement.width,height:this.renderer.domElement.height},shadowEnabled:this.renderer.shadowMap.enabled,shadowMapSize:this.renderer.shadowMap.enabled?this.keyLight.shadow.mapSize.x:0,environmentIntensity:this.scene.environmentIntensity,postprocessing:{ssao:this.postprocessingEnabled,samples:this.postprocessingEnabled?this.aoKernel:0,multisample:this.postprocessingEnabled?4:0},fpsLimit:60,renderCount:this.renderCount,framesLastSecond:this.frameTimes.filter(time=>now-time<=1000).length,cpuRenderMs:this.cpuRenderMs,exportCount:this.exportCount,fitBounds:this.fitBounds,wheelVisible:this.wheel.visible,model:'quarter-car vertical / illustrative linkage',units:'m',topology:{aArms:this.webs.length,rods:this.linkParts.filter(p=>p.assembly.group.name.includes('rod')).length,chassisMounts:this.mounts.length,struts:this.config.structure==='macpherson'?1:0} };
+    return { actualVisible,inspection:this.getInspection(),camera:this.getCameraState(),mechanical:this.spring.getDiagnostics(),tire:{...this.tirePresentation},structure:this.config.structure,springType:this.config.springType,quality:this.quality,studioMode:this.studioMode,componentFocus:this.componentFocus,components:[...this.components],triangles:this.renderer.info.render.triangles,draws:this.renderer.info.render.calls,geometries:this.renderer.info.memory.geometries,textures:this.renderer.info.memory.textures,coilBufferVertices:this.spring.coilGeometry.attributes.position.count,pixelRatio:this.renderer.getPixelRatio(),canvas:{width:this.renderer.domElement.width,height:this.renderer.domElement.height},shadowEnabled:this.renderer.shadowMap.enabled,shadowMapSize:this.renderer.shadowMap.enabled?this.keyLight.shadow.mapSize.x:0,environmentIntensity:this.scene.environmentIntensity,postprocessing:{ssao:this.postprocessingEnabled,samples:this.postprocessingEnabled?this.aoKernel:0,multisample:this.postprocessingEnabled?4:0},fpsLimit:60,renderCount:this.renderCount,framesLastSecond:this.frameTimes.filter(time=>now-time<=1000).length,cpuRenderMs:this.cpuRenderMs,exportCount:this.exportCount,fitBounds:this.fitBounds,wheelVisible:this.wheel.visible,model:'quarter-car vertical / illustrative linkage',units:'m',topology:{aArms:this.webs.length,rods:this.linkParts.filter(p=>p.assembly.group.name.includes('rod')).length,chassisMounts:this.mounts.length,struts:this.config.structure==='macpherson'?1:0} };
   }
 
   render(force=false) {

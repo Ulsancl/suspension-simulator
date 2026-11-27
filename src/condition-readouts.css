@@ -1,0 +1,154 @@
+.condition-metric {
+  --condition-accent: #7edfca;
+}
+
+.condition-metric[data-stroke="rebound"] {
+  --condition-accent: #9cc5ff;
+}
+
+.condition-metric[data-stroke$="-stop"],
+.condition-metric[data-load="over"],
+.condition-metric[data-load="lost"] {
+  --condition-accent: #f3b277;
+}
+
+.condition-scale {
+  padding: 4px 0 4px;
+}
+
+.condition-track {
+  position: relative;
+  height: 5px;
+  margin-inline: 2px;
+  border-radius: 2px;
+  background: #121c25;
+}
+
+.condition-track i {
+  display: block;
+  position: absolute;
+}
+
+.condition-fill {
+  inset: 0 auto 0 var(--start, 0%);
+  width: var(--length, 0%);
+  border-radius: inherit;
+  background: var(--condition-accent);
+}
+
+.condition-reference {
+  inset: -2px auto -2px var(--reference, 50%);
+  width: 1px;
+  background: #c8d8e0;
+  transform: translateX(-50%);
+}
+
+.condition-pointer {
+  inset: -2px auto -2px var(--position, 50%);
+  width: 4px;
+  border-radius: 1px;
+  background: var(--condition-accent);
+  transform: translateX(-50%);
+}
+
+.condition-scale-labels {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 6px;
+  margin-top: 5px;
+  font: 10px/1.4 var(--mono, monospace);
+  color: #a7bdcc;
+}
+
+.condition-scale-status {
+  color: var(--condition-accent);
+  font-weight: 600;
+}
+
+.condition-road {
+  display: grid;
+  gap: 5px;
+  padding: 11px clamp(12px, 2vw, 18px);
+  border-bottom: 1px solid #34454d;
+}
+
+.condition-road-heading,
+.condition-road-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+}
+
+.condition-road-heading h3,
+.condition-road-heading p {
+  margin: 0;
+}
+
+.condition-road-heading h3 {
+  font-size: 13px;
+  color: #ddedee;
+}
+
+.condition-road-heading p,
+.condition-road-caption {
+  font: 11px/1.6 var(--mono, monospace);
+  color: #a7bdcc;
+}
+
+.condition-road-caption [data-road-preview] {
+  color: #a1cafc;
+}
+
+.condition-road svg {
+  display: block;
+  width: 100%;
+  height: 66px;
+  border-radius: 4px;
+  background: #12202a;
+}
+
+.condition-road svg :is(line, path) {
+  vector-effect: non-scaling-stroke;
+}
+
+.condition-road-baseline {
+  stroke: #405664;
+  stroke-dasharray: 3 4;
+}
+
+.condition-road-profile {
+  stroke: #efb97e;
+  stroke-width: 2;
+}
+
+.condition-road-current {
+  stroke: #e2f3fc;
+  stroke-dasharray: 3 2;
+}
+
+.condition-road-distance,
+.condition-road-end {
+  stroke: #9cc5ff;
+  stroke-width: 2;
+}
+
+.chart-condition-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 0 clamp(13px, 1.6vw, 20px) 10px;
+  color: #a7bdcc;
+  font-size: 11px;
+}
+
+.chart-condition-key[hidden] {
+  display: none;
+}
+
+.condition-travel-dot {
+  background: #d6b3ff;
+}

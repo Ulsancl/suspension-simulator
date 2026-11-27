@@ -26,7 +26,9 @@ function download(contents, name, type) {
   link.href = url; link.download = name; link.click(); setTimeout(()=>URL.revokeObjectURL(url),1500);
 }
 function sameConditions(runs) {
-  return runs.length < 2 || runs.slice(1).every(run => ['road','roadHeight','roadWidth','roadSpacing','speed','holderMode','sprungMass','unsprungMass','tireRate','tireRadius','singleEvent'].every(key=>run.config[key]===runs[0].config[key]) && run.duration===runs[0].duration);
+  const keys = ['road','roadHeight','roadWidth','roadSpacing','roadLeadIn','roadRepeatCount','speed','holderMode','sprungMass','unsprungMass','tireRate','tireRadius','singleEvent'];
+  return runs.length < 2 || runs.slice(1).every(run =>
+    keys.every(key => (run.config[key] ?? DEFAULT_CONFIG[key]) === (runs[0].config[key] ?? DEFAULT_CONFIG[key])) && run.duration === runs[0].duration);
 }
 function metricCards(run) {
   return `<div class="selected-stat"><span>${run.config.holderMode==='fixed'?'휠':'차체'} 가속도 RMS</span><strong>${fmt(primaryRMS(run))}<small>m/s²</small></strong></div><div class="selected-stat"><span>최대 |스트로크|</span><strong>${fmt(run.metrics.peakTravel*1000,1)}<small>mm</small></strong></div><div class="selected-stat"><span>접지 이탈</span><strong>${fmt(run.metrics.contactLossPct,1)}<small>%</small></strong></div><div class="selected-stat"><span>최대 접지력</span><strong>${fmt(run.metrics.peakContactForce/1000)}<small>kN</small></strong></div>`;
